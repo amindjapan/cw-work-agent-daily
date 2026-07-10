@@ -1,0 +1,16 @@
+{
+  "name": "cw-work-agent-test",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Human-approved CloudWorks job screening and delivery assistant test build.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "daily": "node src/daily.js --output site",
+    "test": "node test/model.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

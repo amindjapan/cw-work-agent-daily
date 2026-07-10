@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CloudWorks Work Agent Test</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #64717d;
+      --line: #d8dee6;
+      --bg: #f5f7f9;
+      --panel: #fff;
+      --accent: #1f6f5f;
+      --accent-2: #335c99;
+      --danger: #b73535;
+      --warn: #986900;
+      --good: #137a4f;
+      --soft-good: #e7f5ee;
+      --soft-warn: #fff4d9;
+      --soft-danger: #ffecec;
+      --shadow: 0 14px 36px rgba(23, 32, 42, .08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.5;
+    }
+
+    button, input, textarea, select { font: inherit; }
+
+    button {
+      min-height: 38px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: #fff;
+      background: var(--accent);
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      color: var(--ink);
+      background: #fff;
+      border-color: var(--line);
+    }
+
+    button.blue { background: var(--accent-2); }
+
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
+    }
+
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      padding: 9px 10px;
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    header {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .topbar {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 18px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px 18px 36px;
+      display: grid;
+      grid-template-columns: minmax(310px, 380px) minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    section, aside {
+      min-width: 0;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .stack { display: grid; gap: 10px; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 96px;
+      gap: 8px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .message {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .jobs {
+      display: grid;
+      gap: 12px;
+    }
+
+    .job {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .job-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .job h3 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      white-space: nowrap;
+    }
+
+    .pill.good { color: var(--good); background: var(--soft-good); border-color: #bfe6d2; }
+    .pill.warn { color: var(--warn); background: var(--soft-warn); border-color: #f0d58c; }
+    .pill.danger { color: var(--danger); background: var(--soft-danger); border-color: #f3bdbd; }
+
+    .score {
+      width: 56px;
+      height: 56px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      background: #f9fbfc;
+    }
+
+    .desc {
+      color: var(--muted);
+      font-size: 13px;
+      max-height: 4.6em;
+      overflow: hidden;
+    }
+
+    .draft {
+      white-space: pre-wrap;
+      background: #101820;
+      color: #f7fafc;
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 180px;
+      max-height: 420px;
+      overflow: auto;
+      font-size: 13px;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 28px;
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    a { color: var(--accent-2); }
+
+    @media (max-width: 880px) {
+      main { grid-template-columns: 1fr; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .status { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <h1>CloudWorks Work Agent Test</h1>
+      <div class="status" id="health">起動確認中...</div>
+    </div>
+  </header>
+
+  <main>
+    <aside>
+      <div class="panel">
+        <h2>公開検索</h2>
+        <div class="stack">
+          <input id="keywords" value="Python データ整理" aria-label="検索キーワード">
+          <div class="row">
+            <input id="categoryId" placeholder="カテゴリID任意" aria-label="カテゴリID">
+            <select id="pages" aria-label="ページ数">
+              <option value="1">1ページ</option>
+              <option value="2">2ページ</option>
+              <option value="3">3ページ</option>
+            </select>
+          </div>
+          <button id="searchBtn">検索して解析</button>
+          <div class="message" id="searchMsg"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>貼り付け解析</h2>
+        <div class="stack">
+          <input id="sourceUrl" placeholder="元URL任意" aria-label="元URL">
+          <textarea id="sourceText" placeholder="クラウドワークスの検索結果や案件本文を貼り付け"></textarea>
+          <button id="importBtn" class="blue">貼り付けを解析</button>
+          <div class="message" id="importMsg"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>応募プロフィール</h2>
+        <div class="stack">
+          <input id="profileName" value="応募者" aria-label="名前">
+          <textarea id="profileSkills">文章作成、要約、リサーチ、データ整理、CSV/Excel整形、Python/JavaScriptの小規模スクリプト作成</textarea>
+          <input id="profileTimeline" value="内容確認後、24〜72時間を目安に対応可能です" aria-label="納期目安">
+        </div>
+      </div>
+    </aside>
+
+    <section>
+      <div class="panel">
+        <h2>候補案件</h2>
+        <div id="jobs" class="jobs"></div>
+      </div>
+
+      <div class="panel">
+        <h2>ドラフト</h2>
+        <div class="draft" id="draft">案件を選んで応募文または納品ドラフトを作成してください。</div>
+        <div class="message" id="draftMsg"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = { jobs: [] };
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        headers: { "content-type": "application/json" },
+        ...options
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const error = new Error(data.message || data.error || "Request failed");
+        error.data = data;
+        throw error;
+      }
+      return data;
+    }
+
+    function profile() {
+      return {
+        name: $("profileName").value,
+        skills: $("profileSkills").value,
+        timeline: $("profileTimeline").value
+      };
+    }
+
+    async function refresh() {
+      const health = await api("/api/health");
+      $("health").textContent = `案件 ${health.jobs}件 / human-approved test`;
+      const data = await api("/api/jobs");
+      state.jobs = data.jobs || [];
+      renderJobs();
+    }
+
+    function renderJobs() {
+      const root = $("jobs");
+      if (!state.jobs.length) {
+        root.innerHTML = '<div class="empty">まだ案件がありません。公開検索か貼り付け解析を実行してください。</div>';
+        return;
+      }
+      root.innerHTML = "";
+      for (const job of state.jobs) {
+        const analysis = job.analysis || {};
+        const risk = (analysis.riskFlags || []).length > 0;
+        const pillClass = risk ? "danger" : analysis.canExecute ? "good" : "warn";
+        const item = document.createElement("article");
+        item.className = "job";
+        item.innerHTML = `
+          <div class="job-head">
+            <div>
+              <h3>${escapeHtml(job.title)}</h3>
+              <div class="meta">
+                <span class="pill ${pillClass}">${escapeHtml(analysis.verdict || "未判定")}</span>
+                ${job.budget ? `<span class="pill">${escapeHtml(job.budget)}</span>` : ""}
+                ${job.category ? `<span class="pill">${escapeHtml(job.category)}</span>` : ""}
+                ${job.url ? `<a class="pill" href="${escapeAttr(job.url)}" target="_blank" rel="noreferrer">開く</a>` : ""}
+              </div>
+            </div>
+            <div class="score">${Number(analysis.score || 0)}</div>
+          </div>
+          <div class="desc">${escapeHtml(job.description || "")}</div>
+          <div class="meta">
+            ${(analysis.matchedSkills || []).map((skill) => `<span class="pill good">${escapeHtml(skill)}</span>`).join("")}
+            ${(analysis.riskFlags || []).map((flag) => `<span class="pill danger">${escapeHtml(flag)}</span>`).join("")}
+          </div>
+          <div class="actions">
+            <button data-apply="${escapeAttr(job.id)}">応募文</button>
+            <button data-delivery="${escapeAttr(job.id)}" class="secondary">納品雛形</button>
+            <button data-status="${escapeAttr(job.id)}" data-value="watch" class="secondary">保留</button>
+            <button data-status="${escapeAttr(job.id)}" data-value="skip" class="secondary">除外</button>
+          </div>
+        `;
+        root.appendChild(item);
+      }
+    }
+
+    async function searchJobs() {
+      $("searchBtn").disabled = true;
+      $("searchMsg").textContent = "検索中...";
+      try {
+        const data = await api("/api/search", {
+          method: "POST",
+          body: JSON.stringify({
+            keywords: $("keywords").value,
+            pages: $("pages").value,
+            categoryId: $("categoryId").value
+          })
+        });
+        $("searchMsg").textContent = `${data.imported}件取り込みました。`;
+        state.jobs = data.jobs || [];
+        renderJobs();
+        await refresh();
+      } catch (error) {
+        $("searchMsg").textContent = error.message;
+      } finally {
+        $("searchBtn").disabled = false;
+      }
+    }
+
+    async function importText() {
+      $("importBtn").disabled = true;
+      $("importMsg").textContent = "解析中...";
+      try {
+        const data = await api("/api/import", {
+          method: "POST",
+          body: JSON.stringify({
+            sourceUrl: $("sourceUrl").value,
+            sourceText: $("sourceText").value
+          })
+        });
+        $("importMsg").textContent = `${data.imported}件取り込みました。`;
+        state.jobs = data.jobs || [];
+        renderJobs();
+        await refresh();
+      } catch (error) {
+        $("importMsg").textContent = error.message;
+      } finally {
+        $("importBtn").disabled = false;
+      }
+    }
+
+    async function makeDraft(path, jobId) {
+      $("draftMsg").textContent = "作成中...";
+      const data = await api(path, {
+        method: "POST",
+        body: JSON.stringify({ jobId, profile: profile() })
+      });
+      $("draft").textContent = data.draft;
+      $("draftMsg").textContent = `保存先: ${data.file}`;
+    }
+
+    async function setStatus(jobId, status) {
+      const data = await api("/api/jobs/status", {
+        method: "POST",
+        body: JSON.stringify({ jobId, status })
+      });
+      state.jobs = data.jobs || [];
+      renderJobs();
+    }
+
+    function escapeHtml(value) {
+      return String(value || "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, "&#96;");
+    }
+
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) return;
+      if (target.dataset.apply) makeDraft("/api/draft/apply", target.dataset.apply);
+      if (target.dataset.delivery) makeDraft("/api/draft/delivery", target.dataset.delivery);
+      if (target.dataset.status) setStatus(target.dataset.status, target.dataset.value);
+    });
+
+    $("searchBtn").addEventListener("click", searchJobs);
+    $("importBtn").addEventListener("click", importText);
+    refresh().catch((error) => {
+      $("health").textContent = error.message;
+    });
+  </script>
+</body>
+</html>
