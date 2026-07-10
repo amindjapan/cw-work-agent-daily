@@ -176,4 +176,6 @@ test("daily run selects one safe recommendation and renders mobile page", async 
   const html = renderHtml(report);
   assert.match(html, /viewport/);
   assert.match(html, /クラウドワークスで確認/);
+  assert.match(html, /今すぐ更新/);
+  assert.match(html, /actions\/workflows\/daily\.yml/);
 });

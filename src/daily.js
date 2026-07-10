@@ -153,7 +153,10 @@ function renderHtml(report) {
     .topbar, main { width:min(100% - 32px, 900px); margin:0 auto; }
     .topbar { min-height:72px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
     h1 { margin:0; font-size:20px; letter-spacing:0; }
+    .header-actions { display:flex; align-items:center; gap:12px; }
     .updated { color:var(--muted); font-size:12px; text-align:right; }
+    .refresh { display:inline-flex; min-height:36px; align-items:center; justify-content:center; padding:7px 10px; color:var(--teal); background:#fff; border:1px solid var(--teal); border-radius:7px; font-size:13px; font-weight:700; text-decoration:none; white-space:nowrap; }
+    .refresh:hover { color:#fff; background:var(--teal); }
     main { padding:24px 0 44px; }
     .summary { display:flex; gap:18px; margin-bottom:18px; color:var(--muted); font-size:13px; }
     .summary strong { color:var(--ink); font-size:16px; }
@@ -174,6 +177,7 @@ function renderHtml(report) {
     footer { width:min(100% - 32px, 900px); margin:0 auto 28px; color:var(--muted); font-size:12px; }
     @media (max-width:640px) {
       .topbar { padding:14px 0; align-items:flex-start; flex-direction:column; }
+      .header-actions { width:100%; justify-content:space-between; }
       .updated { text-align:left; }
       main { padding-top:18px; }
       .summary { gap:12px; justify-content:space-between; }
@@ -185,7 +189,7 @@ function renderHtml(report) {
   </style>
 </head>
 <body>
-  <header><div class="topbar"><h1>CloudWorks Daily Pick</h1><div class="updated">最終更新<br>${escapeHtml(report.generatedAtJst)}</div></div></header>
+  <header><div class="topbar"><h1>CloudWorks Daily Pick</h1><div class="header-actions"><a class="refresh" href="https://github.com/amindjapan/cw-work-agent-daily/actions/workflows/daily.yml" target="_blank" rel="noreferrer">今すぐ更新</a><div class="updated">最終更新<br>${escapeHtml(report.generatedAtJst)}</div></div></div></header>
   <main>
     <div class="summary"><span><strong>${attemptsOk}</strong> 検索成功</span><span><strong>${report.totalJobs}</strong> 件取得</span><span><strong>${report.safeCandidates}</strong> 件候補</span></div>
     ${content}
