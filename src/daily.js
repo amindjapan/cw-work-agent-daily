@@ -11,7 +11,15 @@ const DEFAULT_KEYWORDS = [
   "ChatGPT リサーチ",
   "CSV データ整理",
   "記事 リライト",
-  "Python スクレイピング"
+  "Python スクレイピング",
+  "ChatGPT 文章 作成",
+  "データ 整理 自動化",
+  "営業リスト 作成",
+  "Excel VBA",
+  "Notion 設計",
+  "業務効率化",
+  "提案資料 作成",
+  "レポート 作成"
 ];
 
 async function runDaily(options = {}) {
@@ -42,7 +50,7 @@ async function runDaily(options = {}) {
   const preliminary = jobs
     .filter((job) => isValidPublicJob(job) && !(job.analysis.riskFlags || []).length)
     .sort(compareJobs)
-    .slice(0, 50);
+    .slice(0, 80);
 
   const detailed = [];
   for (const job of preliminary) {
