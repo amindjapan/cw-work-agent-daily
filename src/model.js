@@ -5,12 +5,14 @@ const POSITIVE_KEYWORDS = [
   "文字起こし", "翻訳", "英語", "データ入力", "excel", "スプレッドシート",
   "csv", "python", "javascript", "html", "css", "wordpress", "vba", "gas",
   "スクレイピング", "リサーチ", "調査", "資料作成", "powerpoint", "chatgpt",
-  "ai", "プロンプト", "notion", "json", "api"
+  "ai", "プロンプト", "notion", "json", "api", "業務効率化", "企画", "分析",
+  "レポート", "提案", "運用", "レビュー", "品質チェック", "業務改善", "自動化"
 ];
 
 const STRONG_KEYWORDS = [
   "python", "javascript", "html", "css", "csv", "json", "api", "スクレイピング",
-  "要約", "リライト", "校正", "データ整理", "資料作成", "スプレッドシート"
+  "要約", "リライト", "校正", "データ整理", "資料作成", "スプレッドシート",
+  "提案", "営業", "分析", "レポート", "自動化"
 ];
 
 const RISK_KEYWORDS = [
@@ -96,7 +98,7 @@ function classifyJob(job) {
     score,
     level,
     verdict,
-    canExecute: !risks.length && score >= 65,
+    canExecute: !risks.length && score >= 60,
     matchedSkills: [...new Set(positive)].slice(0, 10),
     strongSignals: [...new Set(strong)].slice(0, 10),
     riskFlags: [...new Set([...risks, ...lowValue])],
