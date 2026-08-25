@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   build-and-deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -36,6 +37,60 @@ jobs:
       - name: Find today's recommendation
         run: npm run daily
 
+      - name: Create Collector snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f site/latest.json
+
+          SNAPSHOT_DATE="$(node -e '
+            const fs = require("fs");
+            let data;
+            try {
+              data = JSON.parse(fs.readFileSync("site/latest.json", "utf8"));
+            } catch (error) {
+              console.error(`site/latest.json is not valid JSON: ${error.message}`);
+              process.exit(1);
+            }
+            if (typeof data.generatedAt !== "string" || data.generatedAt.length === 0) {
+              console.error("site/latest.json.generatedAt is missing");
+              process.exit(1);
+            }
+            const generatedAt = new Date(data.generatedAt);
+            if (Number.isNaN(generatedAt.getTime())) {
+              console.error("site/latest.json.generatedAt is not a valid date");
+              process.exit(1);
+            }
+            const parts = new Intl.DateTimeFormat("en-US", {
+              timeZone: "Asia/Tokyo",
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit"
+            }).formatToParts(generatedAt);
+            const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+            console.log(`${values.year}-${values.month}-${values.day}`);
+          ')"
+
+          mkdir -p site/archive collector-data
+          cp site/latest.json "site/archive/${SNAPSHOT_DATE}.json"
+          cp site/latest.json collector-data/latest.json
+          cp site/latest.json "collector-data/${SNAPSHOT_DATE}.json"
+
+          test "$(sha256sum site/latest.json "site/archive/${SNAPSHOT_DATE}.json" collector-data/latest.json "collector-data/${SNAPSHOT_DATE}.json" | awk '{print $1}' | sort -u | wc -l)" -eq 1
+          echo "SNAPSHOT_DATE=${SNAPSHOT_DATE}" >> "$GITHUB_ENV"
+
+      - name: Commit Collector repository snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- collector-data/latest.json "collector-data/${SNAPSHOT_DATE}.json"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Update collector snapshot ${SNAPSHOT_DATE}"
+          git push origin HEAD:main
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
