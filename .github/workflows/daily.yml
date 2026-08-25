@@ -91,6 +91,7 @@ jobs:
           fi
           git commit -m "Update collector snapshot ${SNAPSHOT_DATE}"
           git push origin HEAD:main
+          
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
