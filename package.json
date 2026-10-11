@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "daily": "node src/daily.js --output site",
-    "test": "node test/model.test.js"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

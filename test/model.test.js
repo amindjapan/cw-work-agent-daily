@@ -147,7 +147,10 @@ test("does not treat ordinary identity verification text as a block", () => {
   assert.equal(isBlockedOrUnsupported(200, html), false);
 });
 
-test("daily run selects one safe recommendation and renders mobile page", async () => {
+test("daily run selects one safe recommendation and renders mobile page", async (t) => {
+  const fs = require("node:fs");
+  const outputDir = fs.mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "cw-model-test-"));
+  t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));
   const embedded = {
     searchResult: {
       job_offers: [{
@@ -167,7 +170,8 @@ test("daily run selects one safe recommendation and renders mobile page", async 
   const encoded = JSON.stringify(embedded).replace(/&/g, "&amp;").replace(/\"/g, "&quot;");
   const report = await runDaily({
     keywords: ["CSV"],
-    outputDir: require("node:os").tmpdir(),
+    outputDir: require("node:path").join(outputDir, "site"),
+    evidenceDir: require("node:path").join(outputDir, "internal"),
     now: new Date("2026-07-10T00:00:00Z"),
     fetchSearchPage: async () => ({ ok: true, status: 200, url: "fixture", html: `<div id="vue-container" data="${encoded}"></div>` }),
     fetchJobDetail: async (job) => ({ ...job, detailCheckedAt: "2026-07-10T00:00:00Z" })

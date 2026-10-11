@@ -1,6 +1,7 @@
 "use strict";
 
 const { classifyJob, normalizeText } = require("./model");
+const { normalizePublicJobRef, normalizePublicProfileRef } = require("./public-evidence");
 
 const CATEGORY_NAMES = {
   37: "記事・Webコンテンツ作成",
@@ -229,19 +230,73 @@ async function fetchSearchPage({ keywords, page = 1, categoryId = "" }) {
 
 async function fetchJobDetail(job) {
   if (!job || !job.url) return job;
-  const response = await fetch(job.url, { headers: requestHeaders() });
+  const ref = normalizePublicJobRef({ platform: "crowdworks", id: job.id, url: job.url });
+  if (!ref) return { ...job, detailFetch: { ok: false, status: null, outcome: "not_attempted" } };
+  const response = await fetch(ref.url, { headers: requestHeaders() });
   const html = await response.text();
-  if (!response.ok) return job;
+  if (!response.ok || isBlockedOrUnsupported(response.status, html)) {
+    return { ...job, detailFetch: { ok: false, status: response.status, outcome: "fetch_failed" } };
+  }
 
   const description = extractJobDescription(html);
+  if (!description) {
+    return { ...job, detailFetch: { ok: false, status: response.status, outcome: "extraction_failed" } };
+  }
   const detailBudget = description ? extractBudget(description) : "";
   const detailed = {
     ...job,
     budget: detailBudget || job.budget,
     description: description || job.description,
-    detailCheckedAt: new Date().toISOString()
+    detailCheckedAt: new Date().toISOString(),
+    detailFetch: { ok: true, status: response.status, outcome: "success" },
+    contentSources: { description: "detail", budget: detailBudget ? "detail" : "search" },
+    publicClient: extractJobPublicClient(html)
   };
   return { ...detailed, analysis: classifyJob(detailed) };
+}
+
+// A recognized empty array is observed zero; unrelated/malformed HTML is unknown.
+function inspectSearchResult(html, sourceUrl = "") {
+  const match = String(html || "").match(
+    /<div\b[^>]*\bid=["']vue-container["'][^>]*\bdata=["']([\s\S]*?)["'][^>]*>/i
+  );
+  if (match) {
+    try {
+      const data = JSON.parse(decodeHtmlEntities(match[1]));
+      const offers = data && data.searchResult && data.searchResult.job_offers;
+      if (Array.isArray(offers)) {
+        const jobs = extractJobsFromEmbeddedData(html, sourceUrl);
+        const complete = offers.every((offer) => offer && offer.job_offer
+          && /^\d+$/.test(String(offer.job_offer.id)) && offer.job_offer.title)
+          && jobs.length === offers.length;
+        return { jobs, complete, outcome: complete ? "success" : "extraction_failed" };
+      }
+    } catch {
+      return { jobs: [], complete: false, outcome: "extraction_failed" };
+    }
+  }
+  return { jobs: extractJobs(html, sourceUrl), complete: false, outcome: "extraction_failed" };
+}
+
+function extractJobPublicClient(html) {
+  const refs = [];
+  for (const match of String(html || "").matchAll(
+    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  )) {
+    try {
+      const posting = JSON.parse(match[1]);
+      if (posting["@type"] !== "JobPosting") continue;
+      const url = posting.hiringOrganization && posting.hiringOrganization.url;
+      const id = typeof url === "string" && url.match(/^https:\/\/crowdworks\.jp\/public\/employers\/(\d+)(?:[?#].*)?$/);
+      if (!id) continue;
+      const ref = normalizePublicProfileRef({ platform: "crowdworks", profileId: id[1], url });
+      if (ref) refs.push(ref);
+    } catch {
+      // An absent or ambiguous explicit profile link stays unconfirmed.
+    }
+  }
+  const unique = [...new Map(refs.map((ref) => [ref.profileId, ref])).values()];
+  return unique.length === 1 ? unique[0] : null;
 }
 
 function extractJobDescription(html) {
@@ -282,11 +337,13 @@ module.exports = {
   decodeHtmlEntities,
   extractJobs,
   extractJobDescription,
+  extractJobPublicClient,
   extractJobsFromHtml,
   extractJobsFromEmbeddedData,
   extractJobsFromPlainText,
   fetchJobDetail,
   fetchSearchPage,
   formatPayment,
-  isBlockedOrUnsupported
+  isBlockedOrUnsupported,
+  inspectSearchResult
 };

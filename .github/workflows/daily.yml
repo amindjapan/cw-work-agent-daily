@@ -95,10 +95,13 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Prepare public files
+        run: node src/prepare-public-artifact.js --source site --output "$RUNNER_TEMP/cw-public-artifact"
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: ${{ runner.temp }}/cw-public-artifact
 
       - name: Deploy Pages
         id: deployment

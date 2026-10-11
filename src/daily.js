@@ -3,8 +3,11 @@
 const fs = require("fs");
 const path = require("path");
 const { classifyJob } = require("./model");
-const { extractJobs, fetchJobDetail, fetchSearchPage } = require("./scraper");
+const { fetchJobDetail, fetchSearchPage, inspectSearchResult } = require("./scraper");
 const { ensureDir, upsertJobs, writeJson } = require("./store");
+const { buildSnapshot, saveSnapshot, searchScopeId } = require("./collector");
+const { normalizePublicJobRef } = require("./public-evidence");
+const { reviewClientHistories } = require("./client-history");
 
 const DEFAULT_KEYWORDS = [
   "Python データ整理",
@@ -24,26 +27,45 @@ const DEFAULT_KEYWORDS = [
 
 async function runDaily(options = {}) {
   const keywords = options.keywords || DEFAULT_KEYWORDS;
-  const outputDir = options.outputDir || path.join(__dirname, "..", "site");
+  const outputDir = path.resolve(options.outputDir || path.join(__dirname, "..", "site"));
+  // Observations contain internal profile reviews and must stay outside Pages.
+  const evidenceDir = path.resolve(options.evidenceDir || path.join(__dirname, "..", "data", "collector"));
+  assertSeparateOutputs(outputDir, evidenceDir);
   const now = options.now || new Date();
   const searchPage = options.fetchSearchPage || fetchSearchPage;
   const jobDetail = options.fetchJobDetail || fetchJobDetail;
   const attempts = [];
+  const retrievalAttempts = [];
+  const detailAttempts = [];
   let jobs = [];
 
   for (const keyword of keywords) {
     try {
       const result = await searchPage({ keywords: keyword, page: 1 });
-      const imported = extractJobs(result.html, result.url);
+      const fetched = result.ok && !result.needsManualImport;
+      const inspected = fetched ? inspectSearchResult(result.html, result.url)
+        : { jobs: [], complete: false, outcome: "fetch_failed" };
+      const imported = inspected.jobs.filter(isValidPublicJob);
       jobs = upsertJobs(jobs, imported);
       attempts.push({
-        keyword,
-        ok: result.ok && imported.length > 0,
-        status: result.status,
-        imported: imported.length
+        keyword: sanitizeSummaryText(keyword),
+        ok: fetched && inspected.complete,
+        status: Number.isInteger(result.status) && result.status >= 0 && result.status <= 599 ? result.status : null,
+        imported: fetched && (inspected.complete || imported.length) ? imported.length : null
       });
-    } catch (error) {
-      attempts.push({ keyword, ok: false, status: 0, imported: 0, error: error.message });
+      retrievalAttempts.push({
+        scopeId: searchScopeId({ keyword, page: 1 }), keyword, page: 1,
+        ok: fetched && inspected.complete, status: result.status,
+        imported: fetched ? imported.length : null,
+        observedIds: imported.map((job) => job.id),
+        complete: fetched && inspected.complete && imported.length === inspected.jobs.length,
+        outcome: inspected.outcome
+      });
+    } catch {
+      attempts.push({ keyword: sanitizeSummaryText(keyword), ok: false, status: 0, imported: null, error: "fetch_failed" });
+      retrievalAttempts.push({ scopeId: searchScopeId({ keyword, page: 1 }), keyword,
+        page: 1, ok: false, complete: false, status: 0, imported: null,
+        observedIds: [], outcome: "fetch_failed" });
     }
   }
 
@@ -55,9 +77,17 @@ async function runDaily(options = {}) {
   const detailed = [];
   for (const job of preliminary) {
     try {
-      detailed.push(await jobDetail(job));
+      const result = await jobDetail(job);
+      // A detail adapter returning a different job is not evidence for this job.
+      const sameJob = result && isValidPublicJob(result) && String(result.id) === String(job.id);
+      const outcome = sameJob && result.detailFetch ? result.detailFetch.outcome
+        : sameJob && result.detailCheckedAt ? "success" : "extraction_failed";
+      detailed.push(sameJob ? result : job);
+      detailAttempts.push({ jobId: job.id, ok: outcome === "success",
+        status: sameJob && result.detailFetch ? result.detailFetch.status : null, outcome });
     } catch {
       detailed.push(job);
+      detailAttempts.push({ jobId: job.id, ok: false, status: 0, outcome: "fetch_failed" });
     }
   }
 
@@ -66,22 +96,67 @@ async function runDaily(options = {}) {
     .filter((job) => job.analysis.canExecute && !isExpired(job, now))
     .sort(compareJobs);
   const recommendation = candidates[0] || null;
+  const collectionObserved = retrievalAttempts.some((attempt) => attempt.complete)
+    || jobs.length > 0;
   const report = {
     generatedAt: now.toISOString(),
     generatedAtJst: formatJst(now),
-    keywords,
+    keywords: keywords.map(sanitizeSummaryText),
     attempts,
-    totalJobs: jobs.length,
-    safeCandidates: candidates.length,
+    totalJobs: collectionObserved ? jobs.length : null,
+    safeCandidates: collectionObserved ? candidates.length : null,
     recommendation: recommendation ? decorateRecommendation(recommendation) : null
   };
 
+  const currentJobs = upsertJobs(jobs, detailed);
+  const clientReview = reviewClientHistories(options.publicHistories || [], {
+    currentJobs: currentJobs.filter((job) => job.publicClient).map((job) => ({
+      platform: "crowdworks", profileId: job.publicClient.profileId,
+      profileUrl: job.publicClient.url, jobId: job.id, url: job.url,
+      visibility: "public", phase: "current", observedAt: now.toISOString()
+    }))
+  });
+  const snapshot = buildSnapshot({ jobs: currentJobs,
+    candidateIds: candidates.map((job) => job.id), attempts: retrievalAttempts,
+    detailAttempts, now, clientReview });
+  const saved = saveSnapshot(evidenceDir, snapshot, {
+    baselinePath: options.baselinePath || path.join(__dirname, "..", "collector-data", "latest.json")
+  });
+  writeJson(path.join(evidenceDir, "latest.client-review.json"), clientReview);
+  writeJson(path.join(evidenceDir, "client-reviews", `${saved.snapshot.runId}.json`), clientReview);
   writeReport(outputDir, report);
   return report;
 }
 
+function resolvedLocation(directory) {
+  let ancestor = directory;
+  const suffix = [];
+  while (!fs.existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    suffix.unshift(path.basename(ancestor));
+    ancestor = parent;
+  }
+  return path.resolve(fs.realpathSync(ancestor), ...suffix);
+}
+
+function containsPath(parent, child) {
+  const relative = path.relative(parent, child);
+  return !relative || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+}
+
+function assertSeparateOutputs(outputDir, evidenceDir) {
+  const publicOutput = resolvedLocation(outputDir);
+  const internalOutput = resolvedLocation(evidenceDir);
+  const repositorySummaries = resolvedLocation(path.join(__dirname, "..", "collector-data"));
+  if (containsPath(publicOutput, internalOutput) || containsPath(internalOutput, publicOutput)
+    || containsPath(repositorySummaries, internalOutput) || containsPath(internalOutput, repositorySummaries)) {
+    throw new Error("internal_evidence_must_be_separate_from_public_outputs");
+  }
+}
+
 function isValidPublicJob(job) {
-  return Boolean(job && /^\d+$/.test(job.id) && /crowdworks\.jp\/public\/jobs\/\d+/.test(job.url));
+  return Boolean(normalizePublicJobRef({ platform: "crowdworks", id: job && job.id, url: job && job.url }));
 }
 
 function isExpired(job, now) {
@@ -107,7 +182,23 @@ function decorateRecommendation(job) {
   if (analysis.budgetYen) reasons.push(`募集文から確認できた報酬上限: ${analysis.budgetYen.toLocaleString("ja-JP")}円`);
   reasons.push("危険キーワードとAI利用禁止表現は検出されませんでした");
   if (job.detailCheckedAt) reasons.push("案件詳細ページの本文でも再判定済みです");
-  return { ...job, selectionReasons: reasons };
+  const allowed = ["id", "title", "budget", "category", "description", "status", "expiresAt",
+    "applications", "importedAt", "detailCheckedAt"];
+  const result = Object.fromEntries(allowed.filter((key) => typeof job[key] === "string"
+    || (key === "applications" && Number.isFinite(job[key])) || (key === "id" && Number.isSafeInteger(job[key])))
+    .map((key) => [key, typeof job[key] === "string" ? sanitizeSummaryText(job[key]) : job[key]]));
+  result.url = normalizePublicJobRef({ platform: "crowdworks", id: job.id, url: job.url }).url;
+  const source = typeof job.sourceUrl === "string" && job.sourceUrl.match(/^https:\/\/crowdworks\.jp\/public\/jobs\/search(?:[?#].*)?$/);
+  result.sourceUrl = source ? "https://crowdworks.jp/public/jobs/search" : "";
+  return { ...result, analysis: classifyJob(job), selectionReasons: reasons };
+}
+
+function sanitizeSummaryText(value) {
+  return String(value)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[連絡先省略]")
+    .replace(/(?:\+81[-\s]?)?0\d{1,4}[-\s]\d{1,4}[-\s]\d{3,4}/g, "[連絡先省略]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|AKIA[A-Z0-9]{16})\b/g, "[秘密情報省略]")
+    .replace(/(?:氏名|本名|住所|電話番号|メール(?:アドレス)?|LINE\s*ID|password|secret|token|api[_ -]?key|authorization)\s*[:：=]\s*[^\n。;,]+/gi, "[個人・秘密情報省略]");
 }
 
 function writeReport(outputDir, report) {
@@ -142,8 +233,8 @@ function renderHtml(report) {
       </div>
     </article>` : `
     <div class="empty">
-      <h2>安全におすすめできる案件が見つかりませんでした</h2>
-      <p>検索処理は完了しました。条件を緩めず、次回の更新を待ちます。</p>
+      <h2>${report.totalJobs === null ? "取得状況を確認してください" : "機械判定の候補が見つかりませんでした"}</h2>
+      <p>${report.totalJobs === null ? "資料を取得できず、案件数は未確認です。" : "取得範囲内の判定です。公開履歴や規約を本人が確認してください。"}</p>
     </div>`;
 
   return `<!doctype html>
@@ -199,7 +290,7 @@ function renderHtml(report) {
 <body>
   <header><div class="topbar"><h1>CloudWorks Daily Pick</h1><div class="header-actions"><a class="refresh" href="https://github.com/amindjapan/cw-work-agent-daily/actions/workflows/daily.yml" target="_blank" rel="noreferrer">今すぐ更新</a><div class="updated">最終更新<br>${escapeHtml(report.generatedAtJst)}</div></div></div></header>
   <main>
-    <div class="summary"><span><strong>${attemptsOk}</strong> 検索成功</span><span><strong>${report.totalJobs}</strong> 件取得</span><span><strong>${report.safeCandidates}</strong> 件候補</span></div>
+    <div class="summary"><span><strong>${attemptsOk}</strong> 検索成功</span><span><strong>${report.totalJobs === null ? "未確認" : report.totalJobs}</strong> 件取得</span><span><strong>${report.safeCandidates === null ? "未確認" : report.safeCandidates}</strong> 件候補</span></div>
     ${content}
   </main>
   <footer>応募・契約・送信は自動実行しません。案件本文、規約、AI利用条件を本人が確認してから進めてください。</footer>
@@ -209,7 +300,7 @@ function renderHtml(report) {
 
 function renderMarkdown(report) {
   const job = report.recommendation;
-  if (!job) return `# 本日のおすすめ\n\n${report.generatedAtJst}: 安全におすすめできる案件はありませんでした。\n`;
+  if (!job) return `# 本日のおすすめ\n\n${report.generatedAtJst}: ${report.totalJobs === null ? "資料を取得できず、件数は未確認です。" : "取得範囲内で機械判定の候補はありませんでした。"}\n`;
   return [
     "# 本日のおすすめ",
     "",
@@ -245,7 +336,21 @@ function escapeAttr(value) {
 if (require.main === module) {
   const outputIndex = process.argv.indexOf("--output");
   const outputDir = outputIndex >= 0 ? path.resolve(process.argv[outputIndex + 1]) : undefined;
-  runDaily({ outputDir })
+  const evidenceIndex = process.argv.indexOf("--evidence-output");
+  const evidenceDir = evidenceIndex >= 0 ? path.resolve(process.argv[evidenceIndex + 1]) : undefined;
+  const historyIndex = process.argv.indexOf("--public-histories");
+  let publicHistories = [];
+  try {
+    if (historyIndex >= 0) {
+      const evidence = JSON.parse(fs.readFileSync(path.resolve(process.argv[historyIndex + 1]), "utf8"));
+      publicHistories = Array.isArray(evidence) ? evidence : evidence.histories;
+      if (!Array.isArray(publicHistories)) throw new Error("invalid_public_history_input");
+    }
+  } catch {
+    console.error("invalid_public_history_input");
+    process.exitCode = 1;
+  }
+  if (!process.exitCode) runDaily({ outputDir, evidenceDir, publicHistories })
     .then((report) => {
       console.log(JSON.stringify({
         generatedAt: report.generatedAt,

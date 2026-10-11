@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2000-01-01T00:00:00.000Z",
+  "generatedAtJst": "2000/01/01 09:00",
+  "keywords": ["synthetic CSV"],
+  "attempts": [{ "keyword": "synthetic CSV", "ok": true, "status": 200, "imported": 37 }],
+  "totalJobs": 37,
+  "safeCandidates": 4,
+  "recommendation": {
+    "id": "900001",
+    "url": "https://crowdworks.jp/public/jobs/900001"
+  }
+}
