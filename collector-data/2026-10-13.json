@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-13T01:01:08.353Z",
-  "generatedAtJst": "2026/10/13 10:01",
+  "generatedAt": "2026-10-13T01:23:03.412Z",
+  "generatedAtJst": "2026/10/13 10:23",
   "keywords": [
     "Python データ整理",
     "ChatGPT リサーチ",
@@ -19,84 +19,129 @@
   "attempts": [
     {
       "keyword": "Python データ整理",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 38
     },
     {
       "keyword": "ChatGPT リサーチ",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "CSV データ整理",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 27
     },
     {
       "keyword": "記事 リライト",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "Python スクレイピング",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "ChatGPT 文章 作成",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "データ 整理 自動化",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "営業リスト 作成",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "Excel VBA",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "Notion 設計",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "業務効率化",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "提案資料 作成",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     },
     {
       "keyword": "レポート 作成",
-      "ok": false,
+      "ok": true,
       "status": 200,
-      "imported": null
+      "imported": 50
     }
   ],
-  "totalJobs": null,
-  "safeCandidates": null,
-  "recommendation": null
+  "totalJobs": 554,
+  "safeCandidates": 18,
+  "recommendation": {
+    "id": "13515844",
+    "title": "【長期募集】X（旧Twitter）のフォロワー増加に向けたSNS運用・リサーチ・交流支援スタッフ募集",
+    "budget": "50,000円〜100,000円",
+    "category": "",
+    "description": "当社では、X（旧Twitter）を活用した個人アカウントの認知拡大・フォロワー増加に向けて、継続的に運用をサポートいただける方を募集しています。 単に投稿を作成するだけでなく、競合アカウントの分析、投稿改善、交流先のリサーチ、リプライ・引用ポストの企画など、フォロワー増加につながる運用全般をお願いしたいと考えています。 ■ 依頼したい業務 ① Xアカウント・投稿のリサーチ 同ジャンルで伸びているアカウントの調査 フォロワー数3,000〜30,000人程度の交流候補の抽出 インプレッションの多い投稿の収集 伸びた投稿の冒頭・構成・テーマ・文字数の分析 競合の成功パターンを参考にした投稿案の作成 ② X投稿の企画・制作 通常投稿の企画・文章作成 拡散を目的とした投稿の制作 フォロワー獲得・ファン化を目的とした投稿の制作 長文投稿・X記事の企画 過去に伸びた投稿のリライト 投稿スケジュールの管理、承認後の予約投稿 ③ リプライ・引用ポストの運用支援 関連性の高いアカウントのリサーチ 毎日10〜20件程度の交流候補投稿の抽出 投稿内容に合わせた自然なリプライ案の作成 毎日1〜2件程度の引用ポスト案の作成 自社投稿へのコメント確認・返信案の作成 継続的に交流しているアカウントの管理 ※機械的な自動フォロー、自動いいね、自動返信、大量の定型コメント送信は行いません。実際の交流は個別の内容を確認したうえで、人の手で対応します。 ④ プロフィール改善 プロフィール文章の改善提案 名前・肩書き・キャッチコピーの最適化 固定ポストの選定・改善提案 フォローにつながる導線の見直し ⑤ 数値分析・改善提案 フォロワー数・純増数の集計 投稿別インプレッションの集計 プロフィールクリック数の分析 リプライ・引用・フォロー獲得状況の確認 伸びた投稿の共通点の分析 週次レポートの作成 翌週の改善施策の提案 ■ 運用の目的 最も重要な目標は、フォロワー数の継続的な増加です。 単純にインプレッションを増やすのではなく、ターゲットとなる読者に認知され、プロフィールを閲覧してもらい、継続的にフォローされるアカウントを目指します。 ■ 求める方 Xの運用経験がある方 Xの投稿分析やリサーチが得意な方 伸びている投稿の特徴を言語化できる方 AIツールを活用したリサーチ・文章作成ができる方 日々の運用を継続できる方 数字をもとに改善提案ができる方 Xアカウントを実際に伸ばした経験がある方は優遇します。 ■ 応募時に教えていただきたいこと Xの運用経験・実績 運用したアカウントのURL（公開可能な範囲） フォロワー増加の実績 対応可能な業務範囲 1日あたりの稼働可能時間 希望報酬 X運用で最も重要だと考えていること ■ 契約について まずは1〜2週間のテスト運用を実施し、業務の品質・スピード・改善提案の内容を確認したうえで、長期的な継続依頼を検討しています。 継続的にフォロワーを増やすための運用体制を、一緒に構築できる方からのご応募をお待ちしております。",
+    "status": "released",
+    "expiresAt": "2026-10-22",
+    "applications": 14,
+    "importedAt": "2026-10-13T01:23:09.761Z",
+    "detailCheckedAt": "2026-10-13T01:23:20.513Z",
+    "url": "https://crowdworks.jp/public/jobs/13515844",
+    "sourceUrl": "https://crowdworks.jp/public/jobs/search",
+    "analysis": {
+      "score": 100,
+      "level": "high",
+      "verdict": "候補",
+      "canExecute": true,
+      "matchedSkills": [
+        "記事",
+        "リライト",
+        "リサーチ",
+        "調査",
+        "ai",
+        "企画",
+        "分析",
+        "レポート",
+        "提案",
+        "運用"
+      ],
+      "strongSignals": [
+        "リライト",
+        "提案",
+        "分析",
+        "レポート"
+      ],
+      "riskFlags": [],
+      "budgetYen": 100000
+    },
+    "selectionReasons": [
+      "自動化と相性のよい要素: リライト、提案、分析、レポート",
+      "募集文から確認できた報酬上限: 100,000円",
+      "危険キーワードとAI利用禁止表現は検出されませんでした",
+      "案件詳細ページの本文でも再判定済みです"
+    ]
+  }
 }
