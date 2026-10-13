@@ -328,8 +328,11 @@ function isBlockedOrUnsupported(status, html) {
   const text = normalizeText(html);
   return status === 401
     || status === 403
-    || /JavaScriptを有効|ページを正しく表示できません|アクセスが集中|captcha/i.test(text)
-    || (/ログインしてください/.test(text) && !/searchResult|job_offers/.test(html));
+    || /アクセスが集中|captcha/i.test(text)
+    || /ログインしてください/.test(text)
+    // Normal pages carry fallback notices even outside noscript. Require verified content.
+    || (/JavaScriptを有効|ページを正しく表示できません/i.test(text)
+      && !inspectSearchResult(html).complete && !extractJobDescription(html));
 }
 
 module.exports = {

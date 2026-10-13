@@ -51,7 +51,9 @@ async function runDaily(options = {}) {
         keyword: sanitizeSummaryText(keyword),
         ok: fetched && inspected.complete,
         status: Number.isInteger(result.status) && result.status >= 0 && result.status <= 599 ? result.status : null,
-        imported: fetched && (inspected.complete || imported.length) ? imported.length : null
+        imported: fetched && (inspected.complete || imported.length) ? imported.length : null,
+        ...(fetched && inspected.complete ? {} : { error: !result.ok ? "fetch_failed"
+          : result.needsManualImport ? "blocked_or_unsupported" : "extraction_failed" })
       });
       retrievalAttempts.push({
         scopeId: searchScopeId({ keyword, page: 1 }), keyword, page: 1,
