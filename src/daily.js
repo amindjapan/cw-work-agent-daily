@@ -8,6 +8,7 @@ const { ensureDir, upsertJobs, writeJson } = require("./store");
 const { buildSnapshot, saveSnapshot, searchScopeId } = require("./collector");
 const { normalizePublicJobRef } = require("./public-evidence");
 const { reviewClientHistories } = require("./client-history");
+const { createPrivateCandidateStore } = require("./private-candidates");
 
 const DEFAULT_KEYWORDS = [
   "Python データ整理",
@@ -31,6 +32,9 @@ async function runDaily(options = {}) {
   // Observations contain internal profile reviews and must stay outside Pages.
   const evidenceDir = path.resolve(options.evidenceDir || path.join(__dirname, "..", "data", "collector"));
   assertSeparateOutputs(outputDir, evidenceDir);
+  // No CLI/environment activation: private retention requires an explicit local caller.
+  const privateCandidateStore = createPrivateCandidateStore(options.privateCandidateStore,
+    { publicOutputDir: outputDir, evidenceOutputDir: evidenceDir });
   const now = options.now || new Date();
   const searchPage = options.fetchSearchPage || fetchSearchPage;
   const jobDetail = options.fetchJobDetail || fetchJobDetail;
@@ -121,6 +125,7 @@ async function runDaily(options = {}) {
   const snapshot = buildSnapshot({ jobs: currentJobs,
     candidateIds: candidates.map((job) => job.id), attempts: retrievalAttempts,
     detailAttempts, now, clientReview });
+  privateCandidateStore.save({ snapshot, summary: report });
   const saved = saveSnapshot(evidenceDir, snapshot, {
     baselinePath: options.baselinePath || path.join(__dirname, "..", "collector-data", "latest.json")
   });
