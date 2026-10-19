@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-18T00:05:13.024Z",
-  "generatedAtJst": "2026/10/18 9:05",
+  "generatedAt": "2026-10-19T00:13:15.739Z",
+  "generatedAtJst": "2026/10/19 9:13",
   "keywords": [
     "Python データ整理",
     "ChatGPT リサーチ",
@@ -21,7 +21,7 @@
       "keyword": "Python データ整理",
       "ok": true,
       "status": 200,
-      "imported": 38
+      "imported": 37
     },
     {
       "keyword": "ChatGPT リサーチ",
@@ -33,7 +33,7 @@
       "keyword": "CSV データ整理",
       "ok": true,
       "status": 200,
-      "imported": 27
+      "imported": 26
     },
     {
       "keyword": "記事 リライト",
@@ -96,7 +96,7 @@
       "imported": 50
     }
   ],
-  "totalJobs": 548,
+  "totalJobs": 550,
   "safeCandidates": 20,
   "recommendation": {
     "id": "13488036",
@@ -107,8 +107,8 @@
     "status": "released",
     "expiresAt": "2026-10-27",
     "applications": 9,
-    "importedAt": "2026-10-18T00:05:17.886Z",
-    "detailCheckedAt": "2026-10-18T00:05:22.557Z",
+    "importedAt": "2026-10-19T00:13:20.589Z",
+    "detailCheckedAt": "2026-10-19T00:13:26.464Z",
     "url": "https://crowdworks.jp/public/jobs/13488036",
     "sourceUrl": "https://crowdworks.jp/public/jobs/search",
     "analysis": {
