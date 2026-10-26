@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-25T00:21:38.489Z",
-  "generatedAtJst": "2026/10/25 9:21",
+  "generatedAt": "2026-10-26T00:26:18.985Z",
+  "generatedAtJst": "2026/10/26 9:26",
   "keywords": [
     "Python データ整理",
     "ChatGPT リサーチ",
@@ -96,7 +96,7 @@
       "imported": 50
     }
   ],
-  "totalJobs": 545,
+  "totalJobs": 543,
   "safeCandidates": 22,
   "recommendation": {
     "id": "13488036",
@@ -107,8 +107,8 @@
     "status": "released",
     "expiresAt": "2026-10-27",
     "applications": 13,
-    "importedAt": "2026-10-25T00:21:43.762Z",
-    "detailCheckedAt": "2026-10-25T00:21:51.027Z",
+    "importedAt": "2026-10-26T00:26:23.695Z",
+    "detailCheckedAt": "2026-10-26T00:26:29.929Z",
     "url": "https://crowdworks.jp/public/jobs/13488036",
     "sourceUrl": "https://crowdworks.jp/public/jobs/search",
     "analysis": {
