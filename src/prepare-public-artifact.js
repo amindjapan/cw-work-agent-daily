@@ -3,6 +3,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { isDeepStrictEqual } = require("node:util");
+const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
+const { normalizeText } = require("./model");
+const { parseStrictJsonBytes } = require("./strict-json");
 
 const PUBLIC_FILES = ["index.html", "latest.json", "latest.md", ".nojekyll"];
 const isString = (value) => typeof value === "string";
@@ -42,6 +45,91 @@ const projectAttempt = (value) => projectFields(value, {
   imported: scalar(nullableNumber), error: scalar(isString)
 });
 
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
+const isTimestamp = (value) => isString(value) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+  && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+const countFields = (names) => Object.fromEntries(names.map((name) => [name, scalar(isCount)]));
+
+function projectCollection(value) {
+  const result = projectFields(value, {
+    schemaVersion: scalar((version) => version === 1),
+    status: scalar((status) => status === "attempts_completed"),
+    startedAt: scalar(isTimestamp), attemptsCompletedAt: scalar(isTimestamp),
+    decisionAsOf: scalar(isTimestamp),
+    search: (search) => projectFields(search,
+      countFields(["planned", "attempted", "succeeded", "failed", "notAttempted"])),
+    details: (details) => projectFields(details,
+      countFields(["observed", "attempted", "succeeded", "failed", "notAttempted"])),
+    candidates: (candidates) => projectFields(candidates, {
+      machine: scalar((count) => count === null || isCount(count)),
+      detailConfirmed: scalar((count) => count === null || isCount(count)),
+      detailUnconfirmed: scalar((count) => count === null || isCount(count))
+    })
+  });
+  const complete = (object, keys) => isObject(object) && keys.every((key) => Object.hasOwn(object, key));
+  if (!complete(result, ["schemaVersion", "status", "startedAt", "attemptsCompletedAt", "decisionAsOf",
+    "search", "details", "candidates"])
+    || !complete(result.search, ["planned", "attempted", "succeeded", "failed", "notAttempted"])
+    || !complete(result.details, ["observed", "attempted", "succeeded", "failed", "notAttempted"])
+    || !complete(result.candidates, ["machine", "detailConfirmed", "detailUnconfirmed"])) {
+    throw new Error("invalid_public_collection");
+  }
+  const { search, details, candidates } = result;
+  if (Date.parse(result.attemptsCompletedAt) < Date.parse(result.startedAt)
+    || result.decisionAsOf !== result.startedAt
+    || search.attempted !== search.succeeded + search.failed
+    || search.planned !== search.attempted + search.notAttempted
+    || details.attempted !== details.succeeded + details.failed
+    || details.observed !== details.attempted + details.notAttempted
+    || (candidates.machine === null
+      ? candidates.detailConfirmed !== null || candidates.detailUnconfirmed !== null
+      : !isCount(candidates.detailConfirmed) || !isCount(candidates.detailUnconfirmed)
+        || candidates.machine !== candidates.detailConfirmed + candidates.detailUnconfirmed
+        || candidates.detailConfirmed > details.succeeded || candidates.machine > details.observed)) {
+    throw new Error("invalid_public_collection");
+  }
+  return result;
+}
+
+function validateNewSummary(input, summary) {
+  const { collection, totalJobs, safeCandidates, attempts, keywords, recommendation } = summary;
+  const validAttempt = (attempt) => isString(attempt.keyword) && isBoolean(attempt.ok)
+    && (attempt.status === null || isCount(attempt.status) && attempt.status <= 599)
+    && (attempt.imported === null || isCount(attempt.imported))
+    && (!attempt.ok || attempt.imported !== null && Number.isInteger(attempt.status)
+      && attempt.status >= 200 && attempt.status < 300);
+  if ((totalJobs === null) !== (safeCandidates === null)
+    || (totalJobs === null && (recommendation !== null || collection.search.succeeded > 0))
+    || attempts.length !== collection.search.planned || keywords.length !== collection.search.planned
+    || attempts.some((attempt) => !validAttempt(attempt))
+    || attempts.filter((attempt) => attempt.ok).length !== collection.search.succeeded) {
+    throw new Error("invalid_public_collection");
+  }
+  if (recommendation === null) return;
+  const ref = normalizePublicJobRef({ platform: "crowdworks", id: recommendation.id, url: recommendation.url });
+  const checkedAt = normalizePublicTimestamp(recommendation.detailCheckedAt);
+  const analysis = recommendation.analysis;
+  if (collection.candidates.detailConfirmed < 1 || !ref || ref.url !== recommendation.url || !checkedAt
+    || checkedAt < collection.startedAt || checkedAt > collection.attemptsCompletedAt
+    || !normalizeText(recommendation.description) || !analysis || !Number.isInteger(analysis.score)
+    || analysis.score < 0 || analysis.score > 100 || analysis.canExecute !== true
+    || !["low", "medium", "high"].includes(analysis.level)
+    || (Object.hasOwn(input.recommendation, "applications") && !isCount(recommendation.applications))) {
+    throw new Error("invalid_public_collection");
+  }
+  if (Object.hasOwn(input.recommendation, "expiresAt")) {
+    const expiresAt = recommendation.expiresAt;
+    if (expiresAt === "") return;
+    const midnight = typeof expiresAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(expiresAt)
+      ? new Date(`${expiresAt}T00:00:00Z`) : null;
+    if (!midnight || !Number.isFinite(midnight.getTime()) || midnight.toISOString().slice(0, 10) !== expiresAt
+      // Match the legacy decision cutoff; do not move expiry from generatedAt to completion.
+      || Date.parse(`${expiresAt}T23:59:59+09:00`) < Date.parse(collection.decisionAsOf)) {
+      throw new Error("invalid_public_collection");
+    }
+  }
+}
+
 // Keep the legacy public summary, including unknown (null) counts, separate from
 // candidate observations, employer history, relationships, and review inferences.
 function projectPublicSummary(value) {
@@ -50,13 +138,21 @@ function projectPublicSummary(value) {
     attempts: (attempts) => Array.isArray(attempts)
       ? attempts.map(projectAttempt).filter((attempt) => attempt !== undefined) : undefined,
     totalJobs: scalar(nullableNumber), safeCandidates: scalar(nullableNumber),
-    recommendation: projectRecommendation
+    recommendation: projectRecommendation,
+    collection: projectCollection
   });
   const required = ["generatedAt", "generatedAtJst", "keywords", "attempts",
     "totalJobs", "safeCandidates", "recommendation"];
   if (!result || required.some((key) => !Object.hasOwn(result, key))) {
     throw new Error("invalid_public_summary");
   }
+  if (result.collection && (result.collection.startedAt !== result.generatedAt
+    || result.collection.candidates.machine !== result.safeCandidates
+    || (result.totalJobs === null ? result.collection.details.observed !== 0
+      : result.collection.details.observed !== result.totalJobs))) {
+    throw new Error("invalid_public_collection");
+  }
+  if (result.collection) validateNewSummary(value, result);
   return result;
 }
 
@@ -126,7 +222,7 @@ function preparePublicArtifact({ sourceDir, outputDir } = {}) {
     const original = fs.readFileSync(file);
     if (!relative.endsWith(".json")) return { relative, content: original };
     let summary;
-    try { summary = JSON.parse(original.toString("utf8")); }
+    try { summary = parseStrictJsonBytes(original).value; }
     catch { throw new Error("invalid_public_summary"); }
     const projected = projectPublicSummary(summary);
     return { relative, content: isDeepStrictEqual(summary, projected) ? original

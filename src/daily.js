@@ -2,11 +2,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const { classifyJob } = require("./model");
+const { classifyJob, normalizeText } = require("./model");
 const { fetchJobDetail, fetchSearchPage, inspectSearchResult } = require("./scraper");
 const { ensureDir, upsertJobs, writeJson } = require("./store");
 const { buildSnapshot, saveSnapshot, searchScopeId } = require("./collector");
-const { normalizePublicJobRef } = require("./public-evidence");
+const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
 const { reviewClientHistories } = require("./client-history");
 const { createPrivateCandidateStore } = require("./private-candidates");
 
@@ -36,6 +36,10 @@ async function runDaily(options = {}) {
   const privateCandidateStore = createPrivateCandidateStore(options.privateCandidateStore,
     { publicOutputDir: outputDir, evidenceOutputDir: evidenceDir });
   const now = options.now || new Date();
+  // Keep generatedAt/expiry decisions at the legacy collection-start time.
+  // A separate clock measures completion of retrieval attempts, not persistence.
+  const clock = options.clock || (() => new Date());
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new Error("invalid_collection_clock");
   const searchPage = options.fetchSearchPage || fetchSearchPage;
   const jobDetail = options.fetchJobDetail || fetchJobDetail;
   const attempts = [];
@@ -46,26 +50,33 @@ async function runDaily(options = {}) {
   for (const keyword of keywords) {
     try {
       const result = await searchPage({ keywords: keyword, page: 1 });
-      const fetched = result.ok && !result.needsManualImport;
+      const status = Number.isInteger(result.status) && result.status >= 0 && result.status <= 599 ? result.status : null;
+      // Do not parse an error/unknown response merely because an adapter's ok
+      // field is truthy or contradicts its HTTP status.
+      const httpFetched = result.ok === true && status >= 200 && status < 300;
+      const fetched = httpFetched && !result.needsManualImport;
       const inspected = fetched ? inspectSearchResult(result.html, result.url)
         : { jobs: [], complete: false, outcome: "fetch_failed" };
       const imported = inspected.jobs.filter(isValidPublicJob);
+      // Parsing rows is not complete if their public references fail validation.
+      const complete = fetched && inspected.complete && imported.length === inspected.jobs.length;
+      const outcome = fetched && !complete ? "extraction_failed" : inspected.outcome;
       jobs = upsertJobs(jobs, imported);
       attempts.push({
         keyword: sanitizeSummaryText(keyword),
-        ok: fetched && inspected.complete,
-        status: Number.isInteger(result.status) && result.status >= 0 && result.status <= 599 ? result.status : null,
-        imported: fetched && (inspected.complete || imported.length) ? imported.length : null,
-        ...(fetched && inspected.complete ? {} : { error: !result.ok ? "fetch_failed"
+        ok: complete,
+        status,
+        imported: fetched && (complete || imported.length) ? imported.length : null,
+        ...(complete ? {} : { error: !httpFetched ? "fetch_failed"
           : result.needsManualImport ? "blocked_or_unsupported" : "extraction_failed" })
       });
       retrievalAttempts.push({
         scopeId: searchScopeId({ keyword, page: 1 }), keyword, page: 1,
-        ok: fetched && inspected.complete, status: result.status,
+        ok: complete, status,
         imported: fetched ? imported.length : null,
         observedIds: imported.map((job) => job.id),
-        complete: fetched && inspected.complete && imported.length === inspected.jobs.length,
-        outcome: inspected.outcome
+        complete,
+        outcome
       });
     } catch {
       attempts.push({ keyword: sanitizeSummaryText(keyword), ok: false, status: 0, imported: null, error: "fetch_failed" });
@@ -82,26 +93,60 @@ async function runDaily(options = {}) {
 
   const detailed = [];
   for (const job of preliminary) {
+    const requestedRef = normalizePublicJobRef({ platform: "crowdworks", id: job.id, url: job.url });
     try {
-      const result = await jobDetail(job);
+      // An adapter must not be able to rewrite the search observation or the
+      // requested identity before the returned identity is checked.
+      const result = await jobDetail(structuredClone(job));
       // A detail adapter returning a different job is not evidence for this job.
-      const sameJob = result && isValidPublicJob(result) && String(result.id) === String(job.id);
-      const outcome = sameJob && result.detailFetch ? result.detailFetch.outcome
-        : sameJob && result.detailCheckedAt ? "success" : "extraction_failed";
-      detailed.push(sameJob ? result : job);
+      const returnedRef = normalizePublicJobRef({ platform: "crowdworks", id: result && result.id, url: result && result.url });
+      const sameJob = returnedRef && returnedRef.jobId === requestedRef.jobId;
+      const detailFetch = sameJob && result.detailFetch;
+      const status = detailFetch && Number.isInteger(detailFetch.status)
+        && detailFetch.status >= 0 && detailFetch.status <= 599 ? detailFetch.status : null;
+      // A timestamp copied from a search/previous record is insufficient. The
+      // current invocation must explicitly report HTTP and description success.
+      const detailStamp = sameJob ? normalizePublicTimestamp(result.detailCheckedAt) : null;
+      const detailTime = detailStamp ? Date.parse(detailStamp) : NaN;
+      const descriptionSource = sameJob && result.contentSources && result.contentSources.description;
+      const success = detailFetch && detailFetch.ok === true && detailFetch.outcome === "success"
+        && status >= 200 && status < 300 && Number.isFinite(detailTime) && detailTime >= now.getTime()
+        && typeof result.description === "string" && normalizeText(result.description).length > 0
+        && (descriptionSource === undefined || descriptionSource === "detail");
+      const outcome = success ? "success" : detailFetch && detailFetch.outcome === "not_attempted" ? "not_attempted"
+        : detailFetch && (detailFetch.outcome === "fetch_failed" || (status !== null && (status < 200 || status >= 300)))
+          ? "fetch_failed" : "extraction_failed";
+      // Canonical string IDs prevent the later upsert from treating 123 and
+      // "123" as two observations of the same public job.
+      const observedJob = sameJob ? { ...result, id: requestedRef.jobId, url: requestedRef.url } : { ...job };
+      if (success) observedJob.detailCheckedAt = detailStamp;
+      else delete observedJob.detailCheckedAt;
+      detailed.push(observedJob);
       detailAttempts.push({ jobId: job.id, ok: outcome === "success",
-        status: sameJob && result.detailFetch ? result.detailFetch.status : null, outcome });
+        status, outcome });
     } catch {
       detailed.push(job);
       detailAttempts.push({ jobId: job.id, ok: false, status: 0, outcome: "fetch_failed" });
     }
   }
 
+  const attemptsCompletedAt = clock();
+  if (!(attemptsCompletedAt instanceof Date) || !Number.isFinite(attemptsCompletedAt.getTime())
+    || attemptsCompletedAt < now) throw new Error("invalid_collection_clock");
+  for (const [index, attempt] of detailAttempts.entries()) {
+    if (attempt.ok && Date.parse(detailed[index].detailCheckedAt) > attemptsCompletedAt.getTime()) {
+      attempt.ok = false;
+      attempt.outcome = "extraction_failed";
+      delete detailed[index].detailCheckedAt;
+    }
+  }
+  const confirmedIds = new Set(detailAttempts.filter((attempt) => attempt.ok).map((attempt) => String(attempt.jobId)));
   const candidates = detailed
     .map((job) => ({ ...job, analysis: classifyJob(job) }))
     .filter((job) => job.analysis.canExecute && !isExpired(job, now))
     .sort(compareJobs);
-  const recommendation = candidates[0] || null;
+  const confirmedCandidates = candidates.filter((job) => confirmedIds.has(String(job.id)));
+  const recommendation = confirmedCandidates.find(hasValidExpiry) || null;
   const collectionObserved = retrievalAttempts.some((attempt) => attempt.complete)
     || jobs.length > 0;
   const report = {
@@ -111,7 +156,21 @@ async function runDaily(options = {}) {
     attempts,
     totalJobs: collectionObserved ? jobs.length : null,
     safeCandidates: collectionObserved ? candidates.length : null,
-    recommendation: recommendation ? decorateRecommendation(recommendation) : null
+    recommendation: recommendation ? decorateRecommendation(recommendation) : null,
+    collection: {
+      schemaVersion: 1,
+      status: "attempts_completed",
+      startedAt: now.toISOString(),
+      attemptsCompletedAt: attemptsCompletedAt.toISOString(),
+      decisionAsOf: now.toISOString(),
+      search: attemptCounts(retrievalAttempts, keywords.length, "planned"),
+      details: attemptCounts(detailAttempts, jobs.length, "observed"),
+      candidates: {
+        machine: collectionObserved ? candidates.length : null,
+        detailConfirmed: collectionObserved ? confirmedCandidates.length : null,
+        detailUnconfirmed: collectionObserved ? candidates.length - confirmedCandidates.length : null
+      }
+    }
   };
 
   const currentJobs = upsertJobs(jobs, detailed);
@@ -133,6 +192,12 @@ async function runDaily(options = {}) {
   writeJson(path.join(evidenceDir, "client-reviews", `${saved.snapshot.runId}.json`), clientReview);
   writeReport(outputDir, report);
   return report;
+}
+
+function attemptCounts(attempts, total, totalKey) {
+  const attempted = attempts.filter((attempt) => attempt.outcome !== "not_attempted").length;
+  const succeeded = attempts.filter((attempt) => attempt.ok).length;
+  return { [totalKey]: total, attempted, succeeded, failed: attempted - succeeded, notAttempted: total - attempted };
 }
 
 function resolvedLocation(directory) {
@@ -172,6 +237,14 @@ function isExpired(job, now) {
   return Number.isFinite(end.getTime()) && end < now;
 }
 
+function hasValidExpiry(job) {
+  // Keep legacy machine counts and the start-time expiry rule. An invalid
+  // calendar date cannot establish a valid deadline for a recommendation.
+  return job.expiresAt === undefined || job.expiresAt === null || job.expiresAt === ""
+    || (typeof job.expiresAt === "string"
+    && normalizePublicTimestamp(`${job.expiresAt}T23:59:59+09:00`) !== null);
+}
+
 function compareJobs(a, b) {
   const scoreA = a.analysis ? a.analysis.score : 0;
   const scoreB = b.analysis ? b.analysis.score : 0;
@@ -189,6 +262,7 @@ function decorateRecommendation(job) {
   if (analysis.budgetYen) reasons.push(`募集文から確認できた報酬上限: ${analysis.budgetYen.toLocaleString("ja-JP")}円`);
   reasons.push("危険キーワードとAI利用禁止表現は検出されませんでした");
   if (job.detailCheckedAt) reasons.push("案件詳細ページの本文でも再判定済みです");
+  reasons.push("機械判定の結果です。AI利用許可・採算・応募資格・安全性は別途確認が必要です");
   const allowed = ["id", "title", "budget", "category", "description", "status", "expiresAt",
     "applications", "importedAt", "detailCheckedAt"];
   const result = Object.fromEntries(allowed.filter((key) => typeof job[key] === "string"
@@ -219,6 +293,8 @@ function writeReport(outputDir, report) {
 function renderHtml(report) {
   const job = report.recommendation;
   const attemptsOk = report.attempts.filter((attempt) => attempt.ok).length;
+  const unconfirmedCandidates = report.safeCandidates !== null && report.safeCandidates > 0;
+  const detailCount = report.collection && report.collection.candidates.detailConfirmed;
   const content = job ? `
     <article class="recommendation">
       <div class="score" aria-label="自動化適性スコア ${job.analysis.score}">
@@ -240,8 +316,8 @@ function renderHtml(report) {
       </div>
     </article>` : `
     <div class="empty">
-      <h2>${report.totalJobs === null ? "取得状況を確認してください" : "機械判定の候補が見つかりませんでした"}</h2>
-      <p>${report.totalJobs === null ? "資料を取得できず、案件数は未確認です。" : "取得範囲内の判定です。公開履歴や規約を本人が確認してください。"}</p>
+      <h2>${report.totalJobs === null ? "取得状況を確認してください" : unconfirmedCandidates ? detailCount > 0 ? "推薦条件を確認してください" : "詳細確認済みの推薦候補はありません" : "機械判定の候補が見つかりませんでした"}</h2>
+      <p>${report.totalJobs === null ? "資料を取得できず、案件数は未確認です。" : unconfirmedCandidates ? detailCount > 0 ? "詳細確認済みの機械候補はありますが、掲載期限などの推薦条件を確認できませんでした。" : "機械候補はありますが、この実行で詳細本文を確認できていないため推薦していません。" : "取得範囲内の判定です。公開履歴や規約を本人が確認してください。"}</p>
     </div>`;
 
   return `<!doctype html>
@@ -297,7 +373,8 @@ function renderHtml(report) {
 <body>
   <header><div class="topbar"><h1>CloudWorks Daily Pick</h1><div class="header-actions"><a class="refresh" href="https://github.com/amindjapan/cw-work-agent-daily/actions/workflows/daily.yml" target="_blank" rel="noreferrer">今すぐ更新</a><div class="updated">最終更新<br>${escapeHtml(report.generatedAtJst)}</div></div></div></header>
   <main>
-    <div class="summary"><span><strong>${attemptsOk}</strong> 検索成功</span><span><strong>${report.totalJobs === null ? "未確認" : report.totalJobs}</strong> 件取得</span><span><strong>${report.safeCandidates === null ? "未確認" : report.safeCandidates}</strong> 件候補</span></div>
+    <div class="summary"><span><strong>${attemptsOk}</strong> 検索成功</span><span><strong>${report.totalJobs === null ? "未確認" : report.totalJobs}</strong> 件取得</span><span><strong>${report.safeCandidates === null ? "未確認" : report.safeCandidates}</strong> 件機械候補</span><span><strong>${detailCount === null || detailCount === undefined ? "UNKNOWN" : detailCount}</strong> 件詳細確認済み候補</span></div>
+    <p class="updated">収集開始: ${escapeHtml(report.collection ? report.collection.startedAt : report.generatedAt)} / 取得試行完了: ${escapeHtml(report.collection ? report.collection.attemptsCompletedAt : "UNKNOWN")} / 判定基準: ${escapeHtml(report.collection ? report.collection.decisionAsOf : report.generatedAt)}</p>
     ${content}
   </main>
   <footer>応募・契約・送信は自動実行しません。案件本文、規約、AI利用条件を本人が確認してから進めてください。</footer>
@@ -307,7 +384,7 @@ function renderHtml(report) {
 
 function renderMarkdown(report) {
   const job = report.recommendation;
-  if (!job) return `# 本日のおすすめ\n\n${report.generatedAtJst}: ${report.totalJobs === null ? "資料を取得できず、件数は未確認です。" : "取得範囲内で機械判定の候補はありませんでした。"}\n`;
+  if (!job) return `# 本日のおすすめ\n\n${report.generatedAtJst}: ${report.totalJobs === null ? "資料を取得できず、件数は未確認です。" : report.safeCandidates > 0 ? report.collection && report.collection.candidates.detailConfirmed > 0 ? "詳細確認済みの機械候補はありますが、掲載期限などの推薦条件を確認できませんでした。" : "機械候補はありますが、この実行で詳細確認済みの推薦候補はありません。" : "取得範囲内で機械判定の候補はありませんでした。"}\n`;
   return [
     "# 本日のおすすめ",
     "",

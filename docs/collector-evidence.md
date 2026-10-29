@@ -1,5 +1,7 @@
 # Collector の観測記録と公開業務履歴
 
+取得開始・試行完了の分離、詳細確認済み候補だけの推薦、公開集計の追加と保存済み資料の純粋照合は [限定修正と非公開受け渡し](offline-collector-handoff.md) を参照してください。以下の既存形式を維持しつつ、公開投影に許可する `collection` 集計を追加します。旧資料の完了時刻は `UNKNOWN` です。
+
 ## 出力と互換性
 
 `runDaily` の戻り値と `latest.json` は従来の summary のキーを維持します。正常に取得した場合の `totalJobs` / `safeCandidates` は従来通り数値です。取得も解析もできない場合は `null` とし、正常取得した空一覧の `0` と区別します。検索の `attempts[].imported` も未取得では `null`、正常取得した空一覧では `0` です。`safeCandidates` は取得範囲の機械判定候補数であり、安全保証ではありません。
@@ -23,7 +25,7 @@ run ID は取得時刻と構造化内容に基づきます。同日に別の取�
 
 前回資料は内部保存先の最新 snapshot を優先し、明示した `baselinePath`、または旧 `collector-data/latest.json` を参照します。全IDがない旧 summary は比較不足のままにします。内部保存先を継続使用するローカル実行では履歴を保持します。CI の一時実行環境をまたぐ内部保存先は未接続であり、新しい runner では旧 summary 以上の前回資料がない場合があります。
 
-workflow は追加観測をリポジトリへコピー・commit しません。公開コピーは `src/prepare-public-artifact.js` により、従来の `index.html`、`latest.json`、`latest.md`、`.nojekyll`、`archive/YYYY-MM-DD.json` だけを空の staging へ複製し、その staging を Pages artifact とします。JSON は従来フィールドだけを通し、追加フィールドを除外します。`site/collector/` に古い追加資料が残っていても公開コピーへ入りません。cron・権限・環境設定は変更していません。発注者履歴・推論の公開には別途明示承認と公開設定が必要で、この実装に公開を有効にする設定はありません。本作業では workflow を実行・公開しません。
+workflow は追加観測をリポジトリへコピー・commit しません。公開コピーは `src/prepare-public-artifact.js` により、従来の `index.html`、`latest.json`、`latest.md`、`.nojekyll`、`archive/YYYY-MM-DD.json` だけを空の staging へ複製し、その staging を Pages artifact とします。JSON は従来フィールドと明示許可した `collection` の時刻・固定状態・集計だけを通し、内部の追加フィールドを除外します。`site/collector/` に古い追加資料が残っていても公開コピーへ入りません。cron・権限・環境設定は変更していません。発注者履歴・推論の公開には別途明示承認と公開設定が必要で、この実装に公開を有効にする設定はありません。本作業では workflow を実行・公開しません。
 
 ## 差分の意味
 

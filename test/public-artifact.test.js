@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { preparePublicArtifact } = require("../src/prepare-public-artifact");
+const { preparePublicArtifact, projectPublicSummary } = require("../src/prepare-public-artifact");
 
 function directories(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cw-public-artifact-test-"));
@@ -39,6 +39,190 @@ function writeSite(sourceDir, data = summary()) {
 function json(directory, relative) {
   return JSON.parse(fs.readFileSync(path.join(directory, relative), "utf8"));
 }
+
+function collectionSummary() {
+  const data = summary();
+  data.generatedAt = "2026-10-11T02:00:00.000Z";
+  data.recommendation.detailCheckedAt = "2026-10-11T02:00:02.000Z";
+  data.collection = {
+    schemaVersion: 1, status: "attempts_completed",
+    startedAt: data.generatedAt, attemptsCompletedAt: "2026-10-11T02:00:03.000Z",
+    decisionAsOf: data.generatedAt,
+    search: { planned: 1, attempted: 1, succeeded: 1, failed: 0, notAttempted: 0 },
+    details: { observed: 1, attempted: 1, succeeded: 1, failed: 0, notAttempted: 0 },
+    candidates: { machine: 1, detailConfirmed: 1, detailUnconfirmed: 0 }
+  };
+  return data;
+}
+
+test("collection aggregates survive public projection without changing authenticated JSON bytes", (t) => {
+  const dirs = directories(t), data = collectionSummary();
+  writeSite(dirs.sourceDir, data);
+  preparePublicArtifact(dirs);
+  assert.deepEqual(json(dirs.outputDir, "latest.json"), data);
+  assert.deepEqual(fs.readFileSync(path.join(dirs.outputDir, "latest.json")),
+    fs.readFileSync(path.join(dirs.sourceDir, "latest.json")));
+});
+
+test("collection projection excludes nested candidate records and arbitrary secret fields", () => {
+  const original = collectionSummary(), injected = structuredClone(original);
+  for (const target of [injected, injected.collection, injected.collection.search,
+    injected.collection.details, injected.collection.candidates]) {
+    target.privateRecord = { candidates: ["INTERNAL_CANDIDATE_MARKER"], secret: "INTERNAL_SECRET_MARKER" };
+    target.candidateIds = ["INTERNAL_CANDIDATE_MARKER"];
+  }
+  assert.deepEqual(projectPublicSummary(injected), original);
+  assert.doesNotMatch(JSON.stringify(projectPublicSummary(injected)), /INTERNAL_|privateRecord|candidateIds/);
+});
+
+test("legacy summaries never acquire inferred collection completion", () => {
+  const original = summary(), projected = projectPublicSummary(original);
+  assert.deepEqual(projected, original);
+  assert.equal(Object.hasOwn(projected, "collection"), false);
+});
+
+test("invalid aggregate types, dates and contradictory counts fail before staging", (t) => {
+  const mutations = [
+    (data) => { data.collection.startedAt = "INTERNAL_SECRET_MARKER"; },
+    (data) => { data.collection.status = "INTERNAL_SECRET_MARKER"; },
+    (data) => { data.collection.attemptsCompletedAt = "2026-02-30T02:00:03.000Z"; },
+    (data) => { data.collection.attemptsCompletedAt = "2026-10-10T02:00:03.000Z"; },
+    (data) => { data.collection.decisionAsOf = "2026-10-11T02:00:01.000Z"; },
+    (data) => { data.collection.details.succeeded = 0; },
+    (data) => { data.collection.details.observed = 2; },
+    (data) => { data.collection.search.attempted = -1; },
+    (data) => { data.collection.search.failed = 0.5; },
+    (data) => { data.collection.search.planned = Number.MAX_SAFE_INTEGER + 1; },
+    (data) => { data.collection.candidates.machine = 2; },
+    (data) => { data.collection.candidates.detailConfirmed = null; },
+    (data) => { delete data.collection.details.notAttempted; }
+  ];
+  for (const mutate of mutations) {
+    const dirs = directories(t), data = collectionSummary();
+    mutate(data);
+    writeSite(dirs.sourceDir, data);
+    assert.throws(() => preparePublicArtifact(dirs), /invalid_public_collection/);
+    assert.equal(fs.existsSync(dirs.outputDir), false);
+  }
+});
+
+test("aggregate projection distinguishes unobserved candidates from confirmed zero", () => {
+  const data = collectionSummary();
+  data.totalJobs = null;
+  data.safeCandidates = null;
+  data.recommendation = null;
+  data.collection.search = { planned: 1, attempted: 1, succeeded: 0, failed: 1, notAttempted: 0 };
+  data.attempts = [{ keyword: "CSV", ok: false, status: 403, imported: null, error: "fetch_failed" }];
+  data.collection.details = { observed: 0, attempted: 0, succeeded: 0, failed: 0, notAttempted: 0 };
+  data.collection.candidates = { machine: null, detailConfirmed: null, detailUnconfirmed: null };
+  assert.deepEqual(projectPublicSummary(data), data);
+  data.totalJobs = 0;
+  data.safeCandidates = 0;
+  data.collection.search = { planned: 1, attempted: 1, succeeded: 1, failed: 0, notAttempted: 0 };
+  data.attempts = [{ keyword: "CSV", ok: true, status: 200, imported: 0 }];
+  data.collection.candidates = { machine: 0, detailConfirmed: 0, detailUnconfirmed: 0 };
+  assert.deepEqual(projectPublicSummary(data), data);
+});
+
+test("v2 new collection rejects unknown and confirmed count mixtures", () => {
+  for (const mutate of [
+    (data) => { data.totalJobs = null; data.safeCandidates = 0; data.recommendation = null;
+      data.collection.details = { observed: 0, attempted: 0, succeeded: 0, failed: 0, notAttempted: 0 };
+      data.collection.candidates = { machine: 0, detailConfirmed: 0, detailUnconfirmed: 0 }; },
+    (data) => { data.totalJobs = 0; data.safeCandidates = null; data.recommendation = null;
+      data.collection.details = { observed: 0, attempted: 0, succeeded: 0, failed: 0, notAttempted: 0 };
+      data.collection.candidates = { machine: null, detailConfirmed: null, detailUnconfirmed: null }; }
+  ]) {
+    const data = collectionSummary(); mutate(data);
+    assert.throws(() => projectPublicSummary(data), /invalid_public_collection/);
+  }
+});
+
+test("v2 new collection agrees with public search attempts", () => {
+  for (const mutate of [
+    (data) => { data.attempts[0].ok = false; },
+    (data) => { data.attempts[0].status = 403; },
+    (data) => { data.attempts[0].imported = -1; },
+    (data) => { data.attempts = []; },
+    (data) => { data.keywords = []; }
+  ]) {
+    const data = collectionSummary(); mutate(data);
+    assert.throws(() => projectPublicSummary(data), /invalid_public_collection/);
+  }
+});
+
+test("v2 new recommendation needs a confirmed candidate, canonical reference and valid in-run time", () => {
+  for (const mutate of [
+    (data) => { data.collection.candidates = { machine: 1, detailConfirmed: 0, detailUnconfirmed: 1 }; },
+    (data) => { data.recommendation.url = "https://crowdworks.jp/public/jobs/999"; },
+    (data) => { delete data.recommendation.detailCheckedAt; },
+    (data) => { data.recommendation.detailCheckedAt = "2026-10-11T01:59:59.999Z"; },
+    (data) => { data.recommendation.detailCheckedAt = "2026-10-11T02:00:03.001Z"; },
+    (data) => { data.recommendation.detailCheckedAt = "2026-02-30T02:00:02Z"; }
+  ]) {
+    const data = collectionSummary(); mutate(data);
+    assert.throws(() => projectPublicSummary(data), /invalid_public_collection/);
+  }
+  const offset = collectionSummary();
+  offset.recommendation.detailCheckedAt = "2026-10-11T11:00:02+09:00";
+  assert.deepEqual(projectPublicSummary(offset), offset);
+});
+
+test("v2 new recommendation rejects invalid deadlines and deadlines expired at the decision time", () => {
+  for (const expiresAt of ["2000-01-01", "2026-02-30", "not-a-date", "2026-10-11T23:59:59Z", 123]) {
+    const data = collectionSummary(); data.recommendation.expiresAt = expiresAt;
+    assert.throws(() => projectPublicSummary(data), /invalid_public_collection/);
+  }
+  const data = collectionSummary();
+  data.recommendation.expiresAt = "2026-10-11";
+  assert.deepEqual(projectPublicSummary(data), data);
+});
+
+test("v2 new recommendation rejects malformed score, body and application count fields", () => {
+  for (const mutate of [
+    (data) => { data.recommendation.analysis.score = 999; },
+    (data) => { data.recommendation.analysis.score = 75.5; },
+    (data) => { data.recommendation.analysis.canExecute = false; },
+    (data) => { data.recommendation.applications = -10; },
+    (data) => { data.recommendation.applications = 1.5; },
+    (data) => { data.recommendation.description = "<p> </p>"; }
+  ]) {
+    const data = collectionSummary(); mutate(data);
+    assert.throws(() => projectPublicSummary(data), /invalid_public_collection/);
+  }
+});
+
+test("v2 malformed UTF-8 JSON cannot be silently decoded and copied to public staging", (t) => {
+  const dirs = directories(t);
+  writeSite(dirs.sourceDir);
+  const bytes = Buffer.from(JSON.stringify(summary()));
+  const position = bytes.indexOf(Buffer.from("Public work description"));
+  bytes[position] = 0xff;
+  fs.writeFileSync(path.join(dirs.sourceDir, "latest.json"), bytes);
+  assert.throws(() => preparePublicArtifact(dirs), /invalid_public_summary/);
+  assert.equal(fs.existsSync(dirs.outputDir), false);
+});
+
+test("v2 inconsistent new recommendation stops staging without modifying the source", (t) => {
+  const dirs = directories(t), data = collectionSummary();
+  data.recommendation.expiresAt = "2000-01-01";
+  writeSite(dirs.sourceDir, data);
+  const before = fs.readFileSync(path.join(dirs.sourceDir, "latest.json"));
+  assert.throws(() => preparePublicArtifact(dirs), /invalid_public_collection/);
+  assert.equal(fs.existsSync(dirs.outputDir), false);
+  assert.deepEqual(fs.readFileSync(path.join(dirs.sourceDir, "latest.json")), before);
+});
+
+test("v2 duplicate JSON keys cannot hide internal raw bytes behind the projected value", (t) => {
+  const dirs = directories(t);
+  writeSite(dirs.sourceDir);
+  const original = JSON.stringify(summary()).replace('"description":"Public work description"',
+    '"description":"INTERNAL_DUPLICATE_MARKER","descrip\\u0074ion":"Public work description"');
+  fs.writeFileSync(path.join(dirs.sourceDir, "latest.json"), original);
+  assert.equal(JSON.parse(original).recommendation.description, "Public work description");
+  assert.throws(() => preparePublicArtifact(dirs), /invalid_public_summary/);
+  assert.equal(fs.existsSync(dirs.outputDir), false);
+});
 
 test("public artifact preserves legacy public files byte for byte", (t) => {
   const dirs = directories(t);

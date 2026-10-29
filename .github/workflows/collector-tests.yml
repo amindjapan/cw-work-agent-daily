@@ -1,0 +1,67 @@
+name: Collector Offline Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collector-offline-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the exact PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check JavaScript syntax
+        run: find src test -maxdepth 1 -type f -name '*.js' -print0 | xargs -0 -n 1 node --check
+
+      - name: Run offline synthetic tests
+        run: npm test -- --test-reporter=tap --test-reporter-destination="$RUNNER_TEMP/collector-tests.tap"
+
+      - name: Verify runtime, commit, counts and real-link tests
+        env:
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node - "$RUNNER_TEMP/collector-tests.tap" <<'NODE'
+          const fs = require("node:fs");
+          const { execFileSync } = require("node:child_process");
+          const lines = fs.readFileSync(process.argv[2], "utf8").split(/\r?\n/);
+          const count = (name) => {
+            const match = lines.map((line) => line.match(new RegExp(`^# ${name} (\\d+)$`))).find(Boolean);
+            if (!match) throw new Error("missing_test_count");
+            return Number(match[1]);
+          };
+          const required = [
+            "storage beneath an output directory symlink is rejected",
+            "storage beneath a symlinked ancestor is rejected",
+            "allowed filenames cannot read through symlinks"
+          ];
+          const linkTests = Object.fromEntries(required.map((name) => [name,
+            lines.some((line) => /^ok \d+ - /.test(line)
+              && line.replace(/^ok \d+ - /, "") === name)]));
+          const commit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+          const result = { node: process.version, commit, tests: count("tests"), pass: count("pass"),
+            fail: count("fail"), skipped: count("skipped"), cancelled: count("cancelled"), linkTests };
+          console.log(JSON.stringify(result, null, 2));
+          if (Number(process.versions.node.split(".")[0]) !== 22 || commit !== process.env.EXPECTED_COMMIT
+            || result.tests < required.length || result.tests !== result.pass || result.fail !== 0
+            || result.skipped !== 0 || result.cancelled !== 0 || Object.values(linkTests).some((ok) => !ok)) {
+            throw new Error("offline_test_evidence_incomplete");
+          }
+          NODE
