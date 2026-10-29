@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { runDaily, renderHtml } = require("../src/daily");
+const { CollectionAbortedError } = require("../src/collection-diagnostics");
 const { inspectSearchResult, extractJobPublicClient, fetchJobDetail } = require("../src/scraper");
 
 function directory(t) {
@@ -33,6 +34,18 @@ function options(dir, ids, now = "2026-10-11T02:00:00Z") {
 
 function json(dir, name) {
   return JSON.parse(fs.readFileSync(path.join(dir, "internal", name), "utf8"));
+}
+
+async function abortedWithoutOutputs(opts, stage, status) {
+  await assert.rejects(runDaily(opts), (error) => {
+    assert.ok(error instanceof CollectionAbortedError);
+    assert.equal(error.message, "collector_access_aborted");
+    assert.equal(error.diagnostics.aborted, true);
+    assert.ok(error.diagnostics.events.some((event) => event.stage === stage && event.httpStatus === status));
+    return true;
+  });
+  assert.equal(fs.existsSync(opts.outputDir), false);
+  assert.equal(fs.existsSync(opts.evidenceDir), false);
 }
 
 test("daily preserves legacy fields, adds acquisition counts and saves every machine candidate", async (t) => {
@@ -99,16 +112,11 @@ test("a resolved parent alias cannot bypass internal output separation", async (
     /internal_evidence_must_be_separate/);
 });
 
-test("failed retrieval has unknown counts and does not parse error bodies", async (t) => {
+test("access-denied retrieval aborts before parsing error bodies or saving reports", async (t) => {
   const dir = directory(t);
   const opts = options(dir, [123]);
   opts.fetchSearchPage = async () => ({ ok: false, status: 403, html: searchHtml([999]), url: "https://crowdworks.jp/public/jobs/search" });
-  const report = await runDaily(opts);
-  assert.equal(report.totalJobs, null);
-  assert.equal(report.safeCandidates, null);
-  assert.equal(report.attempts[0].imported, null);
-  assert.equal(json(dir, "latest.snapshot.json").jobs.length, 0);
-  assert.match(renderHtml(report), /未確認/);
+  await abortedWithoutOutputs(opts, "search", 403);
 });
 
 test("confirmed empty search differs from unknown extraction", async (t) => {
@@ -167,6 +175,7 @@ test("detail HTTP failure and missing description stay explicit failures", async
   global.fetch = async () => ({ ok: false, status: 429, text: async () => "private error body" });
   const failed = await fetchJobDetail(job);
   assert.equal(failed.detailFetch.outcome, "fetch_failed");
+  assert.equal(failed.detailFetch.stopReason, "rate_limited");
   assert.equal(failed.detailCheckedAt, undefined);
   global.fetch = async () => ({ ok: true, status: 200, text: async () => "<html>unknown</html>" });
   assert.equal((await fetchJobDetail(job)).detailFetch.outcome, "extraction_failed");
@@ -236,13 +245,17 @@ test("collection separates legacy decision time from completion across JST midni
   assert.equal(report.recommendation.id, "123");
 });
 
-test("confirmed zero, failed searches and no configured searches remain distinct", async (t) => {
+test("confirmed zero, access stops, other failed searches and no configured searches remain distinct", async (t) => {
   const empty = await runDaily(options(directory(t), []));
   assert.deepEqual(empty.collection.candidates, { machine: 0, detailConfirmed: 0, detailUnconfirmed: 0 });
   assert.equal(empty.collection.search.succeeded, 1);
-  for (const status of [403, 429]) {
+  for (const status of [401, 403, 429, 500]) {
     const opts = options(directory(t), []);
     opts.fetchSearchPage = async () => ({ ok: false, status, html: searchHtml([123]) });
+    if (status !== 500) {
+      await abortedWithoutOutputs(opts, "search", status);
+      continue;
+    }
     const failed = await runDaily(opts);
     assert.deepEqual(failed.collection.candidates, { machine: null, detailConfirmed: null, detailUnconfirmed: null });
     assert.equal(failed.collection.search.failed, 1);
@@ -267,8 +280,8 @@ test("partial search retains observed candidates and exposes incomplete retrieva
   assert.equal(report.collection.candidates.detailConfirmed, 1);
 });
 
-test("detail HTTP failures, exceptions and another ID never become recommendations", async (t) => {
-  for (const kind of ["403", "429", "exception", "another_id", "missing_description", "missing_metadata"]) {
+test("detail access stops abort while other failures never become recommendations", async (t) => {
+  for (const kind of ["401", "403", "429", "500", "exception", "another_id", "missing_description", "missing_metadata"]) {
     await t.test(kind, async (t) => {
       const dir = directory(t), opts = options(dir, [123]);
       opts.fetchJobDetail = async (job) => {
@@ -281,6 +294,10 @@ test("detail HTTP failures, exceptions and another ID never become recommendatio
         return { ...job, detailCheckedAt: opts.now.toISOString(),
           detailFetch: { ok: false, status: Number(kind), outcome: "fetch_failed" } };
       };
+      if (["401", "403", "429"].includes(kind)) {
+        await abortedWithoutOutputs(opts, "detail", Number(kind));
+        return;
+      }
       const report = await runDaily(opts);
       assert.equal(report.recommendation, null);
       // Search fallbacks still count under the existing machine-candidate definition.
@@ -319,16 +336,25 @@ test("an explicit not-attempted adapter stays unattempted and unconfirmed", asyn
   assert.equal(report.recommendation, null);
 });
 
-test("partial detail success recommends only the confirmed job", async (t) => {
-  const opts = options(directory(t), [123, 456]);
-  opts.fetchJobDetail = async (job) => ({ ...job, detailCheckedAt: opts.now.toISOString(),
-    detailFetch: String(job.id) === "123" ? { ok: false, status: 429, outcome: "fetch_failed" }
-      : { ok: true, status: 200, outcome: "success" } });
-  const report = await runDaily(opts);
-  assert.equal(report.safeCandidates, 2);
-  assert.equal(report.recommendation.id, "456");
-  assert.deepEqual(report.collection.candidates, { machine: 2, detailConfirmed: 1, detailUnconfirmed: 1 });
-  assert.match(report.recommendation.selectionReasons.join(" "), /AI利用許可・採算・応募資格・安全性は別途確認/);
+test("partial detail success continues only when the other failure does not require an access stop", async (t) => {
+  for (const status of [429, 500]) {
+    const opts = options(directory(t), [123, 456]);
+    let detailCalls = 0;
+    opts.fetchJobDetail = async (job) => { detailCalls++; return { ...job, detailCheckedAt: opts.now.toISOString(),
+      detailFetch: String(job.id) === "123" ? { ok: false, status, outcome: "fetch_failed" }
+        : { ok: true, status: 200, outcome: "success" } }; };
+    if (status === 429) {
+      await abortedWithoutOutputs(opts, "detail", status);
+      assert.equal(detailCalls, 1);
+      continue;
+    }
+    const report = await runDaily(opts);
+    assert.equal(detailCalls, 2);
+    assert.equal(report.safeCandidates, 2);
+    assert.equal(report.recommendation.id, "456");
+    assert.deepEqual(report.collection.candidates, { machine: 2, detailConfirmed: 1, detailUnconfirmed: 1 });
+    assert.match(report.recommendation.selectionReasons.join(" "), /AI利用許可・採算・応募資格・安全性は別途確認/);
+  }
 });
 
 test("detail cap and risk exclusions remain unattempted without expanding collection", async (t) => {
@@ -423,6 +449,10 @@ test("v2 failed or future detail timestamps cannot replace the search observatio
     opts.fetchJobDetail = async (job) => ({ ...job, importedAt: opts.now.toISOString(),
       detailCheckedAt: "2099-01-01T00:00:00Z",
       detailFetch: { ok, status: ok ? 200 : 403, outcome: ok ? "success" : "fetch_failed" } });
+    if (!ok) {
+      await abortedWithoutOutputs(opts, "detail", 403);
+      continue;
+    }
     const report = await runDaily(opts), snapshot = json(dir, "latest.snapshot.json");
     assert.equal(report.recommendation, null);
     assert.equal(snapshot.jobs[0].detailStatus, ok ? "extraction_failed" : "fetch_failed");
@@ -513,14 +543,19 @@ test("v2 public-reference filtering cannot turn all-invalid or partial search ro
   }
 });
 
-test("v2 search requires boolean success and an explicit integer HTTP 2xx before parsing", async (t) => {
-  for (const [ok, status] of [[true, 403], [true, 429], [true, null], [true, "200"], [true, NaN],
+test("v2 search access stops override contradictory adapter success and all other failures remain unparsed", async (t) => {
+  for (const [ok, status] of [[true, 401], [true, 403], [true, 429], [true, null], [true, "200"], [true, NaN],
     [true, 200.5], [true, 600], [true, 0], [false, 200], ["true", 200], [1, 200], [null, 200]]) {
     const dir = directory(t), opts = options(dir, [123]);
     let details = 0;
     opts.fetchSearchPage = async () => ({ ok, status, html: searchHtml([123]),
       url: "https://crowdworks.jp/public/jobs/search" });
     opts.fetchJobDetail = async () => { details++; throw new Error("unexpected_detail_after_failed_search"); };
+    if ([401, 403, 429].includes(status)) {
+      await abortedWithoutOutputs(opts, "search", status);
+      assert.equal(details, 0);
+      continue;
+    }
     const report = await runDaily(opts), snapshot = json(dir, "latest.snapshot.json");
     assert.equal(report.totalJobs, null, `ok=${String(ok)}, status=${String(status)}`);
     assert.equal(report.safeCandidates, null);

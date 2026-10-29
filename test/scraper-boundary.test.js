@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { runDaily } = require("../src/daily");
+const { CollectionAbortedError } = require("../src/collection-diagnostics");
 const { fetchSearchPage, fetchJobDetail, isBlockedOrUnsupported } = require("../src/scraper");
 const { projectPublicSummary } = require("../src/prepare-public-artifact");
 
@@ -28,7 +29,7 @@ function detailHtml() {
   })}</script></body></html>`;
 }
 
-async function collect(t, html, status = 200) {
+async function collect(t, html, status = 200, expectedStop = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-scraper-boundary-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const requests = [];
@@ -40,8 +41,21 @@ async function collect(t, html, status = 200) {
     return { ok: search ? status >= 200 && status < 300 : true, status: search ? status : 200,
       text: async () => search ? html : detailHtml() };
   });
-  const report = await runDaily({ keywords: ["CSV"], outputDir: path.join(dir, "site"),
-    evidenceDir: path.join(dir, "internal"), now: new Date("2026-10-13T01:30:00Z") });
+  const opts = { keywords: ["CSV"], outputDir: path.join(dir, "site"),
+    evidenceDir: path.join(dir, "internal"), now: new Date("2026-10-13T01:30:00Z") };
+  if (expectedStop) {
+    await assert.rejects(runDaily(opts), (error) => {
+      assert.ok(error instanceof CollectionAbortedError);
+      assert.equal(error.message, "collector_access_aborted");
+      assert.equal(error.diagnostics.aborted, true);
+      assert.deepEqual(error.diagnostics.events, [{ stage: "search", httpStatus: status, reason: expectedStop }]);
+      return true;
+    });
+    assert.equal(fs.existsSync(opts.outputDir), false);
+    assert.equal(fs.existsSync(opts.evidenceDir), false);
+    return { requests };
+  }
+  const report = await runDaily(opts);
   const snapshot = JSON.parse(fs.readFileSync(path.join(dir, "internal", "latest.snapshot.json"), "utf8"));
   return { report, snapshot, requests };
 }
@@ -96,23 +110,22 @@ test("real fetch boundary rejects login and CAPTCHA even alongside embedded list
     "<noscript>ログインしてください</noscript>", "<noscript>CAPTCHA required</noscript>"]) {
     await t.test(block, async (t) => {
       const html = searchHtml([123]).replace("</body>", `<p>${block}</p></body>`);
-      const { report, snapshot, requests } = await collect(t, html);
-      assert.equal(report.attempts[0].status, 200);
-      assert.equal(report.attempts[0].ok, false);
-      assert.equal(report.attempts[0].imported, null);
-      assert.equal(report.attempts[0].error, "blocked_or_unsupported");
-      assert.equal(report.totalJobs, null);
-      assert.equal(snapshot.jobs.length, 0);
-      assert.equal(snapshot.retrieval.search[0].outcome, "fetch_failed");
-      assert.deepEqual(projectPublicSummary(report), report);
+      const { requests } = await collect(t, html, 200,
+        block.includes("CAPTCHA") ? "captcha_required" : "authentication_required");
       assert.deepEqual(requests, ["/public/jobs/search"]);
     });
   }
 });
 
-test("HTTP failures still stop before importing a normal-looking listing", async (t) => {
+test("HTTP access stops abort before saving while other HTTP errors remain unknown", async (t) => {
   for (const status of [401, 403, 429, 500]) {
     await t.test(String(status), async (t) => {
+      if (status !== 500) {
+        const reasons = { 401: "authentication_required", 403: "access_denied", 429: "rate_limited" };
+        const { requests } = await collect(t, searchHtml([123]), status, reasons[status]);
+        assert.deepEqual(requests, ["/public/jobs/search"]);
+        return;
+      }
       const { report, requests } = await collect(t, searchHtml([123]), status);
       assert.equal(report.attempts[0].ok, false);
       assert.equal(report.attempts[0].error, "fetch_failed");
@@ -178,6 +191,8 @@ test("detail JobPosting plus noscript succeeds while real detail login and CAPTC
     html = detailHtml().replace("</body>", `<p>${block}</p></body>`);
     const blocked = await fetchJobDetail(job);
     assert.equal(blocked.detailFetch.outcome, "fetch_failed");
+    assert.equal(blocked.detailFetch.stopReason,
+      block.includes("CAPTCHA") ? "captcha_required" : "authentication_required");
     assert.equal(blocked.detailCheckedAt, undefined);
     assert.equal(blocked.description, "search digest");
   }
