@@ -8,6 +8,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { runDaily } = require("../src/daily");
 const { preparePublicArtifact } = require("../src/prepare-public-artifact");
+const { verifyPrivateCandidateHandoff } = require("../src/verify-private-candidates");
 
 const FIRST = "11111111-1111-4111-8111-111111111111";
 const SECOND = "22222222-2222-4222-8222-222222222222";
@@ -44,19 +45,21 @@ function setup(t) {
   t.mock.method(global, "fetch", () => { throw new Error("unexpected_network_fetch"); });
   const opts = { outputDir: path.join(root, "site"), evidenceDir: path.join(root, "internal"),
     keywords: ["CSV"], now: new Date("2026-10-13T02:00:00Z"),
+    clock: () => new Date("2026-10-13T02:00:02Z"),
     fetchSearchPage: async () => {
       calls++;
       return { ok: true, status: 200, url: "https://crowdworks.jp/public/jobs/search",
         html: `<div id="vue-container" data="${JSON.stringify(data).replace(/"/g, "&quot;")}"></div>` };
     },
-    fetchJobDetail: async (job) => ({ ...job, detailCheckedAt: "2026-10-13T02:00:01Z" }) };
+    fetchJobDetail: async (job) => ({ ...job, detailCheckedAt: "2026-10-13T02:00:01Z",
+      detailFetch: { ok: true, status: 200, outcome: "success" } }) };
   const privateOption = { enabled: true, outputDir: path.join(root, "private"), executionId: FIRST,
     extractedAt: "2026-10-13T02:00:02Z",
     policy: { maxCandidates: 100, maxRuns: 60, maxTotalBytes: 5 * 1024 * 1024, retentionDays: 30 } };
   return { root, opts, privateOption, calls: () => calls };
 }
 
-test("private retention reconciles every candidate and leaves the public shape and allowlist unchanged", async (t) => {
+test("private retention reconciles every candidate and preserves legacy fields plus allowed aggregates", async (t) => {
   const { root, opts, privateOption } = setup(t);
   const report = await runDaily({ ...opts, privateCandidateStore: privateOption });
   const record = JSON.parse(fs.readFileSync(path.join(privateOption.outputDir, `${FIRST}.json`), "utf8"));
@@ -69,9 +72,23 @@ test("private retention reconciles every candidate and leaves the public shape a
   assert.equal(record.summarySha256, crypto.createHash("sha256")
     .update(fs.readFileSync(path.join(opts.outputDir, "latest.json"))).digest("hex"));
   assert.deepEqual(Object.keys(report).sort(), ["generatedAt", "generatedAtJst", "keywords", "attempts",
-    "totalJobs", "safeCandidates", "recommendation"].sort());
+    "totalJobs", "safeCandidates", "recommendation", "collection"].sort());
   const publicDir = path.join(root, "staging");
   preparePublicArtifact({ sourceDir: opts.outputDir, outputDir: publicDir });
+  // Retained aggregates must not change the exact summary bytes authenticated by the private record.
+  assert.deepEqual(fs.readFileSync(path.join(publicDir, "latest.json")),
+    fs.readFileSync(path.join(opts.outputDir, "latest.json")));
+  assert.equal(record.summarySha256, crypto.createHash("sha256")
+    .update(fs.readFileSync(path.join(publicDir, "latest.json"))).digest("hex"));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(publicDir, "latest.json"))).collection, report.collection);
+  const verification = verifyPrivateCandidateHandoff({
+    recordBytes: fs.readFileSync(path.join(privateOption.outputDir, `${FIRST}.json`)),
+    snapshotBytes: fs.readFileSync(path.join(opts.evidenceDir, "latest.snapshot.json")),
+    summaryBytes: fs.readFileSync(path.join(publicDir, "latest.json")),
+    now: "2026-10-13T02:00:03Z", expectedExecutionId: FIRST
+  });
+  assert.equal(verification.status, "verified");
+  assert.equal(verification.collectionCompletion, report.collection.attemptsCompletedAt);
   assert.deepEqual(fs.readdirSync(publicDir).sort(), [".nojekyll", "index.html", "latest.json", "latest.md"]);
   for (const file of fs.readdirSync(publicDir)) {
     assert.doesNotMatch(fs.readFileSync(path.join(publicDir, file), "utf8"),
@@ -114,7 +131,8 @@ test("limit and storage failures preserve previous outputs and disabling retenti
   const internalFile = path.join(opts.evidenceDir, "latest.snapshot.json");
   const candidateFile = path.join(privateOption.outputDir, `${FIRST}.json`);
   const previous = [publicFile, internalFile, candidateFile].map((file) => fs.readFileSync(file));
-  const later = { ...opts, now: new Date("2026-10-13T03:00:00Z") };
+  const later = { ...opts, now: new Date("2026-10-13T03:00:00Z"),
+    clock: () => new Date("2026-10-13T03:00:02Z") };
   const nextStore = { ...privateOption, executionId: SECOND, extractedAt: "2026-10-13T03:00:02Z" };
   await assert.rejects(runDaily({ ...later, privateCandidateStore: { ...nextStore,
     policy: { ...privateOption.policy, maxCandidates: 1 } } }), { code: "private_candidates_candidate_limit" });

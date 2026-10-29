@@ -173,8 +173,10 @@ test("daily run selects one safe recommendation and renders mobile page", async 
     outputDir: require("node:path").join(outputDir, "site"),
     evidenceDir: require("node:path").join(outputDir, "internal"),
     now: new Date("2026-07-10T00:00:00Z"),
+    clock: () => new Date("2026-07-10T00:00:01Z"),
     fetchSearchPage: async () => ({ ok: true, status: 200, url: "fixture", html: `<div id="vue-container" data="${encoded}"></div>` }),
-    fetchJobDetail: async (job) => ({ ...job, detailCheckedAt: "2026-07-10T00:00:00Z" })
+    fetchJobDetail: async (job) => ({ ...job, detailCheckedAt: "2026-07-10T00:00:00Z",
+      detailFetch: { ok: true, status: 200, outcome: "success" } })
   });
   assert.equal(report.recommendation.id, "1234567");
   const html = renderHtml(report);
