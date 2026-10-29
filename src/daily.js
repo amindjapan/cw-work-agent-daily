@@ -3,7 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const { classifyJob, normalizeText } = require("./model");
-const { fetchJobDetail, fetchSearchPage, inspectSearchResult } = require("./scraper");
+const { fetchJobDetail, fetchSearchPage, inspectSearchResult, classifyAccessStop } = require("./scraper");
+const { CollectionAbortedError, collectionDiagnostics, diagnosticEvent, httpStatus, stopReason } = require("./collection-diagnostics");
 const { ensureDir, upsertJobs, writeJson } = require("./store");
 const { buildSnapshot, saveSnapshot, searchScopeId } = require("./collector");
 const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
@@ -45,12 +46,25 @@ async function runDaily(options = {}) {
   const attempts = [];
   const retrievalAttempts = [];
   const detailAttempts = [];
+  const diagnosticEvents = [];
+  let aborted = false;
   let jobs = [];
+
+  const diagnostics = () => collectionDiagnostics({ aborted, events: diagnosticEvents,
+    search: retrievalAttempts, details: detailAttempts, planned: keywords.length, observed: jobs.length });
+  const abortIfRequired = () => { if (aborted) throw new CollectionAbortedError(diagnostics()); };
 
   for (const keyword of keywords) {
     try {
       const result = await searchPage({ keywords: keyword, page: 1 });
       const status = Number.isInteger(result.status) && result.status >= 0 && result.status <= 599 ? result.status : null;
+      const reason = classifyAccessStop(status, result.html, result.url) || stopReason(result.stopReason);
+      if (reason) {
+        diagnosticEvents.push(diagnosticEvent("search", status, reason));
+        retrievalAttempts.push({ ok: false, status, outcome: "fetch_failed" });
+        aborted = true;
+        break;
+      }
       // Do not parse an error/unknown response merely because an adapter's ok
       // field is truthy or contradicts its HTTP status.
       const httpFetched = result.ok === true && status >= 200 && status < 300;
@@ -78,13 +92,20 @@ async function runDaily(options = {}) {
         complete,
         outcome
       });
-    } catch {
-      attempts.push({ keyword: sanitizeSummaryText(keyword), ok: false, status: 0, imported: null, error: "fetch_failed" });
+      diagnosticEvents.push(diagnosticEvent("search", status, complete ? "success"
+        : !httpFetched ? "http_failed" : result.needsManualImport ? "unsupported_response" : "extraction_failed"));
+    } catch (error) {
+      const status = httpStatus(error && error.status);
+      const reason = classifyAccessStop(status, "");
+      attempts.push({ keyword: sanitizeSummaryText(keyword), ok: false, status: status || 0, imported: null, error: "fetch_failed" });
       retrievalAttempts.push({ scopeId: searchScopeId({ keyword, page: 1 }), keyword,
-        page: 1, ok: false, complete: false, status: 0, imported: null,
+        page: 1, ok: false, complete: false, status: status || 0, imported: null,
         observedIds: [], outcome: "fetch_failed" });
+      diagnosticEvents.push(diagnosticEvent("search", status, reason || "network_failed"));
+      if (reason) { aborted = true; break; }
     }
   }
+  abortIfRequired();
 
   const preliminary = jobs
     .filter((job) => isValidPublicJob(job) && !(job.analysis.riskFlags || []).length)
@@ -98,6 +119,17 @@ async function runDaily(options = {}) {
       // An adapter must not be able to rewrite the search observation or the
       // requested identity before the returned identity is checked.
       const result = await jobDetail(structuredClone(job));
+      // Access stops apply to the whole invocation even if the adapter returned
+      // a different identity. No further detail request may follow that signal.
+      const responseFetch = result && result.detailFetch;
+      const responseStatus = responseFetch && responseFetch.status;
+      const reason = classifyAccessStop(responseStatus, "") || stopReason(responseFetch && responseFetch.stopReason);
+      if (reason) {
+        diagnosticEvents.push(diagnosticEvent("detail", responseStatus, reason));
+        detailAttempts.push({ jobId: job.id, ok: false, status: responseStatus, outcome: "fetch_failed" });
+        aborted = true;
+        break;
+      }
       // A detail adapter returning a different job is not evidence for this job.
       const returnedRef = normalizePublicJobRef({ platform: "crowdworks", id: result && result.id, url: result && result.url });
       const sameJob = returnedRef && returnedRef.jobId === requestedRef.jobId;
@@ -124,11 +156,19 @@ async function runDaily(options = {}) {
       detailed.push(observedJob);
       detailAttempts.push({ jobId: job.id, ok: outcome === "success",
         status, outcome });
-    } catch {
+      diagnosticEvents.push(diagnosticEvent("detail", status, success ? "success"
+        : outcome === "not_attempted" ? "not_attempted"
+          : outcome === "extraction_failed" ? "extraction_failed" : "http_failed"));
+    } catch (error) {
+      const status = httpStatus(error && error.status);
+      const reason = classifyAccessStop(status, "");
       detailed.push(job);
-      detailAttempts.push({ jobId: job.id, ok: false, status: 0, outcome: "fetch_failed" });
+      detailAttempts.push({ jobId: job.id, ok: false, status: status || 0, outcome: "fetch_failed" });
+      diagnosticEvents.push(diagnosticEvent("detail", status, reason || "network_failed"));
+      if (reason) { aborted = true; break; }
     }
   }
+  abortIfRequired();
 
   const attemptsCompletedAt = clock();
   if (!(attemptsCompletedAt instanceof Date) || !Number.isFinite(attemptsCompletedAt.getTime())
@@ -137,6 +177,8 @@ async function runDaily(options = {}) {
     if (attempt.ok && Date.parse(detailed[index].detailCheckedAt) > attemptsCompletedAt.getTime()) {
       attempt.ok = false;
       attempt.outcome = "extraction_failed";
+      const event = diagnosticEvents[retrievalAttempts.length + index];
+      if (event) event.reason = "extraction_failed";
       delete detailed[index].detailCheckedAt;
     }
   }
@@ -172,6 +214,8 @@ async function runDaily(options = {}) {
       }
     }
   };
+
+  if (typeof options.onDiagnostics === "function") options.onDiagnostics(diagnostics());
 
   const currentJobs = upsertJobs(jobs, detailed);
   const clientReview = reviewClientHistories(options.publicHistories || [], {
@@ -417,41 +461,33 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
 }
 
-if (require.main === module) {
-  const outputIndex = process.argv.indexOf("--output");
-  const outputDir = outputIndex >= 0 ? path.resolve(process.argv[outputIndex + 1]) : undefined;
-  const evidenceIndex = process.argv.indexOf("--evidence-output");
-  const evidenceDir = evidenceIndex >= 0 ? path.resolve(process.argv[evidenceIndex + 1]) : undefined;
-  const historyIndex = process.argv.indexOf("--public-histories");
-  let publicHistories = [];
+async function runCli(args = process.argv.slice(2)) {
   try {
-    if (historyIndex >= 0) {
-      const evidence = JSON.parse(fs.readFileSync(path.resolve(process.argv[historyIndex + 1]), "utf8"));
+    const argumentPath = (flag) => {
+      const index = args.indexOf(flag);
+      return index >= 0 ? path.resolve(args[index + 1]) : undefined;
+    };
+    const outputDir = argumentPath("--output");
+    const evidenceDir = argumentPath("--evidence-output");
+    const historyPath = argumentPath("--public-histories");
+    let publicHistories = [];
+    if (historyPath) {
+      const evidence = JSON.parse(fs.readFileSync(historyPath, "utf8"));
       publicHistories = Array.isArray(evidence) ? evidence : evidence.histories;
       if (!Array.isArray(publicHistories)) throw new Error("invalid_public_history_input");
     }
-  } catch {
-    console.error("invalid_public_history_input");
-    process.exitCode = 1;
+    await runDaily({ outputDir, evidenceDir, publicHistories,
+      onDiagnostics: (diagnostics) => console.log(JSON.stringify(diagnostics)) });
+    return 0;
+  } catch (error) {
+    console.error(JSON.stringify(error instanceof CollectionAbortedError ? error.diagnostics
+      : { kind: "collector_error", stage: "collector", httpStatus: null, reason: "collector_failed" }));
+    return 1;
   }
-  if (!process.exitCode) runDaily({ outputDir, evidenceDir, publicHistories })
-    .then((report) => {
-      console.log(JSON.stringify({
-        generatedAt: report.generatedAt,
-        totalJobs: report.totalJobs,
-        safeCandidates: report.safeCandidates,
-        recommendation: report.recommendation && {
-          id: report.recommendation.id,
-          title: report.recommendation.title,
-          score: report.recommendation.analysis.score,
-          url: report.recommendation.url
-        }
-      }, null, 2));
-    })
-    .catch((error) => {
-      console.error(error);
-      process.exitCode = 1;
-    });
+}
+
+if (require.main === module) {
+  runCli().then((code) => { process.exitCode = code; });
 }
 
 module.exports = {

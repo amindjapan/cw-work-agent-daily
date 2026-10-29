@@ -212,35 +212,39 @@ async function fetchSearchPage({ keywords, page = 1, categoryId = "" }) {
   if (page > 1) url.searchParams.set("page", String(page));
 
   const response = await fetch(url, {
+    // Never follow an authentication redirect or make a second request here.
+    redirect: "manual",
     headers: {
       "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "accept-language": "ja,en-US;q=0.8,en;q=0.6",
       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"
     }
   });
-  const html = await response.text();
+  const { html, stopReason } = await inspectAccessResponse(response, url);
   return {
-    ok: response.ok,
+    ok: response.ok === true,
     status: response.status,
     url: url.toString(),
     html,
-    needsManualImport: isBlockedOrUnsupported(response.status, html)
+    needsManualImport: stopReason !== null || isBlockedOrUnsupported(response.status, html, response.url),
+    stopReason
   };
 }
 
 async function fetchJobDetail(job) {
   if (!job || !job.url) return job;
   const ref = normalizePublicJobRef({ platform: "crowdworks", id: job.id, url: job.url });
-  if (!ref) return { ...job, detailFetch: { ok: false, status: null, outcome: "not_attempted" } };
-  const response = await fetch(ref.url, { headers: requestHeaders() });
-  const html = await response.text();
-  if (!response.ok || isBlockedOrUnsupported(response.status, html)) {
-    return { ...job, detailFetch: { ok: false, status: response.status, outcome: "fetch_failed" } };
+  if (!ref) return { ...job, detailFetch: { ok: false, status: null, outcome: "not_attempted", stopReason: null } };
+  const response = await fetch(ref.url, { headers: requestHeaders(), redirect: "manual" });
+  const { html, stopReason } = await inspectAccessResponse(response, ref.url);
+  if (response.ok !== true || !Number.isInteger(response.status) || response.status < 200 || response.status >= 300
+    || stopReason || isBlockedOrUnsupported(response.status, html, response.url)) {
+    return { ...job, detailFetch: { ok: false, status: response.status, outcome: "fetch_failed", stopReason } };
   }
 
   const description = extractJobDescription(html);
   if (!description) {
-    return { ...job, detailFetch: { ok: false, status: response.status, outcome: "extraction_failed" } };
+    return { ...job, detailFetch: { ok: false, status: response.status, outcome: "extraction_failed", stopReason: null } };
   }
   const detailBudget = description ? extractBudget(description) : "";
   const detailed = {
@@ -248,7 +252,7 @@ async function fetchJobDetail(job) {
     budget: detailBudget || job.budget,
     description: description || job.description,
     detailCheckedAt: new Date().toISOString(),
-    detailFetch: { ok: true, status: response.status, outcome: "success" },
+    detailFetch: { ok: true, status: response.status, outcome: "success", stopReason: null },
     contentSources: { description: "detail", budget: detailBudget ? "detail" : "search" },
     publicClient: extractJobPublicClient(html)
   };
@@ -324,19 +328,132 @@ function requestHeaders() {
   };
 }
 
-function isBlockedOrUnsupported(status, html) {
-  const text = normalizeText(html);
-  return status === 401
-    || status === 403
-    || /アクセスが集中|captcha/i.test(text)
-    || /ログインしてください/.test(text)
+function decodeAccessEntities(html) {
+  // Decode each original entity once. A decoded ampersand must not create a
+  // second numeric entity for the legacy decoder to process without a bound.
+  const named = { quot: "\"", apos: "'", lt: "<", gt: ">", amp: "&", nbsp: " " };
+  return (typeof html === "string" ? html : "").replace(/&(?:#x([a-f0-9]+)|#([0-9]+)|(quot|apos|lt|gt|amp|nbsp));/gi,
+    (_, hex, decimal, name) => {
+      if (name) return named[name.toLowerCase()];
+      const point = Number.parseInt(hex || decimal, hex ? 16 : 10);
+      return Number.isInteger(point) && point >= 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
+        ? String.fromCodePoint(point) : " ";
+    });
+}
+
+function accessWarningText(html) {
+  return normalizeText(decodeAccessEntities(html));
+}
+
+function activeCaptchaWidget(html) {
+  // Only active DOM markers qualify. Library scripts, comments, inert templates,
+  // escaped examples and ordinary job text do not establish a challenge.
+  const markup = (typeof html === "string" ? html : "")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|template)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, " ");
+  const attribute = (tag, name) => {
+    const match = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"));
+    return match ? decodeAccessEntities(match[1] ?? match[2] ?? match[3]).trim() : null;
+  };
+  for (const [tag] of markup.matchAll(/<(?:div|span|form|section)\b[^>]*>/gi)) {
+    const classes = attribute(tag, "class");
+    if (classes && /(?:^|\s)(?:g-recaptcha|h-captcha)(?:\s|$)/i.test(classes) && attribute(tag, "data-sitekey")) return true;
+  }
+  for (const [tag] of markup.matchAll(/<iframe\b[^>]*>/gi)) {
+    const source = attribute(tag, "src");
+    if (!source) continue;
+    try {
+      const url = new URL(source, "https://crowdworks.jp");
+      if (url.protocol !== "https:") continue;
+      if (["www.google.com", "www.recaptcha.net", "recaptcha.google.com"].includes(url.hostname)
+        && /^\/recaptcha\/(?:api2|enterprise)\/(?:anchor|bframe)(?:\/|$)/.test(url.pathname)) return true;
+      if (["newassets.hcaptcha.com", "www.hcaptcha.com", "hcaptcha.com"].includes(url.hostname)
+        && /^\/captcha\/.+\/hcaptcha\.html$/.test(url.pathname)) return true;
+      if (url.hostname === "challenges.cloudflare.com" && /^\/cdn-cgi\/challenge-platform\//.test(url.pathname)) return true;
+    } catch { /* Invalid sources do not trigger a request or escape as diagnostics. */ }
+  }
+  return false;
+}
+
+function loginDestination(value) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+    const pathname = decodeURIComponent(url.pathname);
+    return /(?:^|\/)(?:log[_-]?in|sign[_-]?in|sessions\/new)(?:\/|$)/i.test(pathname);
+  } catch { return false; }
+}
+
+function captchaRequirement(text) {
+  // A CAPTCHA mentioned as an integration/development topic is job content.
+  // Require a challenge label, an explicit requirement, or an instruction.
+  return /^(?:re)?captcha(?:\s+(?:challenge|verification|認証))?[.!。:：]?$/i.test(text)
+    || /\b(?:re)?captcha\b\s*[:：-]?\s*(?:(?:challenge|verification)\s+)?(?:is\s+)?(?:required|must\s+be\s+(?:completed|solved))/i.test(text)
+    || /\b(?:complete|solve|enter|pass)\s+(?:the\s+|a\s+)?(?:re)?captcha\b/i.test(text)
+    || /(?:re)?captcha\s*(?:を)?\s*(?:認証|確認|入力|完了|解決|チェック)(?:を)?\s*(?:して(?:ください|下さい)|する必要|が必要|行って(?:ください|下さい))/i.test(text)
+    || /(?:画像|文字)認証(?:が必要|(?:を)?(?:入力|完了|確認)(?:して(?:ください|下さい)|が必要)|(?:を)?行って(?:ください|下さい))/.test(text)
+    || /私はロボットではありません|ロボットではないことを(?:確認|認証)(?:して(?:ください|下さい)|する必要)|人間であることを(?:確認|認証)(?:して(?:ください|下さい)|する必要)|verify\s+(?:that\s+)?you(?:'re|\s+are)\s+(?:a\s+)?human/i.test(text);
+}
+
+// Fixed classifications only: no URL, response body, or caller exception is
+// returned. A normal JavaScript fallback alone is not an access-stop signal.
+function classifyAccessStop(status, html, responseUrl) {
+  if (status === 403) return "access_denied";
+  if (status === 401) return "authentication_required";
+  if (status === 429) return "rate_limited";
+  if (loginDestination(responseUrl)) return "authentication_required";
+  if (activeCaptchaWidget(html)) return "captcha_required";
+  const text = accessWarningText(html);
+  if (captchaRequirement(text)) {
+    return "captcha_required";
+  }
+  if (/ログイン(?:してください|して下さい|が必要|する必要|して(?:から|続行|閲覧))|please\s+(?:log|sign)[ _-]?in|(?:login|log[ _-]?in|sign[ _-]?in|authentication)\s+(?:is\s+)?required|(?:log|sign)[ _-]?in\s+to\s+(?:continue|access|view)|you\s+(?:must|need\s+to)\s+(?:log|sign)[ _-]?in/i.test(text)) {
+    return "authentication_required";
+  }
+  if (/too\s+many\s+requests|rate[ -]?limit\s+(?:exceeded|reached)|リクエストが多すぎ|アクセス回数.{0,12}(?:制限|超過)/i.test(text)) {
+    return "rate_limited";
+  }
+  if (/アクセスが集中|(?:ただいま|現在).{0,16}(?:混み合|混雑)|temporarily\s+(?:busy|overloaded)|(?:service|server)\s+(?:is\s+)?(?:busy|overloaded)|heavy\s+traffic|high\s+(?:traffic|load)/i.test(text)) {
+    return "access_congestion";
+  }
+  if (/アクセス(?:が|を)(?:一時的に)?(?:制限|ブロック)|不正(?:な)?アクセス|自動(?:化された|的な)?アクセス.{0,20}(?:検知|検出|制限)|セキュリティ(?:上|保護|チェック)|access\s+(?:(?:has\s+been|is|temporarily)\s+)?(?:denied|blocked|restricted)|request\s+(?:blocked|rejected)|you\s+have\s+been\s+blocked|unusual\s+traffic|automated\s+(?:access|requests?).{0,25}(?:blocked|detected|not\s+allowed)|security\s+(?:check|verification)|checking\s+your\s+browser|just\s+a\s+moment|enable\s+javascript\s+and\s+cookies\s+to\s+continue|JavaScript.{0,8}(?:Cookie|クッキー).{0,12}(?:有効|続行|許可)/i.test(text)) {
+    return "protection_warning";
+  }
+  return null;
+}
+
+async function inspectAccessResponse(response, requestUrl) {
+  let stopReason = classifyAccessStop(response.status, "", response.url);
+  if (!stopReason && response.status >= 300 && response.status < 400) {
+    try {
+      const location = response.headers && typeof response.headers.get === "function" && response.headers.get("location");
+      if (typeof location === "string") stopReason = classifyAccessStop(response.status, "", new URL(location, requestUrl).toString());
+    } catch { /* Header parsing never exposes arbitrary values or causes another request. */ }
+  }
+  // Preserve explicit HTTP/redirect stops even if the body cannot be read.
+  if (stopReason) return { html: "", stopReason };
+  try {
+    const html = await response.text();
+    return { html, stopReason: classifyAccessStop(response.status, html, response.url) };
+  } catch {
+    const error = new Error("response_body_read_failed");
+    if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) error.status = response.status;
+    throw error;
+  }
+}
+
+function isBlockedOrUnsupported(status, html, responseUrl) {
+  const text = accessWarningText(html);
+  return classifyAccessStop(status, html, responseUrl) !== null
     // Normal pages carry fallback notices even outside noscript. Require verified content.
-    || (/JavaScriptを有効|ページを正しく表示できません/i.test(text)
+    || (/JavaScriptを有効|ページを正しく表示できません|(?:enable|turn\s+on)\s+javascript|javascript\s+(?:is\s+)?(?:required|disabled)/i.test(text)
       && !inspectSearchResult(html).complete && !extractJobDescription(html));
 }
 
 module.exports = {
   absoluteCrowdWorksUrl,
+  classifyAccessStop,
   decodeHtmlEntities,
   extractJobs,
   extractJobDescription,
