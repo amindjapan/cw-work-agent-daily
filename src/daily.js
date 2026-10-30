@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { types: { isProxy } } = require("node:util");
 const { classifyJob, normalizeText } = require("./model");
 const { fetchJobDetail, fetchSearchPage, inspectSearchResult, classifyAccessStop } = require("./scraper");
 const { CollectionAbortedError, collectionDiagnostics, diagnosticEvent, httpStatus, stopReason } = require("./collection-diagnostics");
@@ -10,6 +11,7 @@ const { buildSnapshot, saveSnapshot, searchScopeId } = require("./collector");
 const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
 const { reviewClientHistories } = require("./client-history");
 const { createPrivateCandidateStore } = require("./private-candidates");
+const { createAttempt, finishAttempt, createAttemptStore } = require("./collector-attempt");
 
 const DEFAULT_KEYWORDS = [
   "Python データ整理",
@@ -28,6 +30,70 @@ const DEFAULT_KEYWORDS = [
 ];
 
 async function runDaily(options = {}) {
+  // Explicit local opt-in only. Existing CLI/workflow callers retain the exact
+  // collection path and do not create a second persistence or publication route.
+  if (options.attemptRecord === undefined) return runDailyCore(options);
+  const settings = options.attemptRecord;
+  if (!settings || typeof settings !== "object" || isProxy(settings) || Array.isArray(settings)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(settings))
+    || Reflect.ownKeys(Object.getOwnPropertyDescriptors(settings)).some((key) => typeof key !== "string"
+      || !["directory", "runId", "runAttempt", "sourceCommit", "workflowPath"].includes(key)
+      || !Object.hasOwn(Object.getOwnPropertyDescriptor(settings, key), "value"))) {
+    throw new Error("invalid_attempt_record_options");
+  }
+  const outputDir = path.resolve(options.outputDir || path.join(__dirname, "..", "site"));
+  const evidenceDir = path.resolve(options.evidenceDir || path.join(__dirname, "..", "data", "collector"));
+  assertSeparateOutputs(outputDir, evidenceDir);
+  const started = options.now || new Date();
+  if (!(started instanceof Date) || !Number.isFinite(started.getTime())) throw new Error("invalid_collection_clock");
+  const store = createAttemptStore({ directory: settings.directory, publicOutputDir: outputDir, evidenceOutputDir: evidenceDir });
+  const initial = createAttempt({ runId: settings.runId, runAttempt: settings.runAttempt,
+    sourceCommit: settings.sourceCommit, workflowPath: settings.workflowPath, startedAt: started.toISOString() });
+  // A missing status destination fails before the first external request.
+  const begun = store.save(initial);
+  if (begun.status !== "saved") throw new Error("attempt_already_recorded");
+  let diagnostics = null;
+  let collectionCompleted = false;
+  let persistenceStarted = false;
+  let report;
+  let failure;
+  try {
+    report = await runDailyCore(options, {
+      collectionCompleted(value) { diagnostics = value; collectionCompleted = true; },
+      persistenceStarted() { persistenceStarted = true; }
+    });
+  } catch (error) {
+    failure = error;
+    if (error instanceof CollectionAbortedError) diagnostics = error.diagnostics;
+  }
+  try {
+    const ended = options.attemptClock ? options.attemptClock() : new Date();
+    if (!(ended instanceof Date) || !Number.isFinite(ended.getTime())) throw new Error("invalid_attempt_clock");
+    const aborted = failure instanceof CollectionAbortedError;
+    const terminal = finishAttempt(initial, {
+      finishedAt: ended.toISOString(),
+      collectionState: aborted ? "ABORTED" : failure && !persistenceStarted ? "FAILED"
+        : collectionCompleted ? "COMPLETED" : "FAILED",
+      diagnostics,
+      localPersistence: failure ? persistenceStarted ? "FAILED" : "NOT_ATTEMPTED" : "SUCCEEDED",
+      repositoryPersistence: "NOT_ATTEMPTED", publication: "NOT_ATTEMPTED",
+      reasonCode: aborted ? "collection_aborted" : failure ? persistenceStarted ? "local_persistence_failed" : "collector_failed"
+        : "collection_completed"
+    });
+    // Never retry a failed/uncertain status write or turn an original failure
+    // into success. A retained start record means completion is unconfirmed.
+    store.save(terminal);
+  } catch {
+    // Preserve an observed access stop in the CLI diagnostics even if its
+    // dedicated record could not be completed. No fallback store is attempted.
+    if (failure) throw failure;
+    throw new Error("attempt_record_failed");
+  }
+  if (failure) throw failure;
+  return report;
+}
+
+async function runDailyCore(options = {}, lifecycle = null) {
   const keywords = options.keywords || DEFAULT_KEYWORDS;
   const outputDir = path.resolve(options.outputDir || path.join(__dirname, "..", "site"));
   // Observations contain internal profile reviews and must stay outside Pages.
@@ -215,6 +281,7 @@ async function runDaily(options = {}) {
     }
   };
 
+  if (lifecycle) lifecycle.collectionCompleted(diagnostics());
   if (typeof options.onDiagnostics === "function") options.onDiagnostics(diagnostics());
 
   const currentJobs = upsertJobs(jobs, detailed);
@@ -228,6 +295,7 @@ async function runDaily(options = {}) {
   const snapshot = buildSnapshot({ jobs: currentJobs,
     candidateIds: candidates.map((job) => job.id), attempts: retrievalAttempts,
     detailAttempts, now, clientReview });
+  if (lifecycle) lifecycle.persistenceStarted();
   privateCandidateStore.save({ snapshot, summary: report });
   const saved = saveSnapshot(evidenceDir, snapshot, {
     baselinePath: options.baselinePath || path.join(__dirname, "..", "collector-data", "latest.json")
@@ -470,13 +538,20 @@ async function runCli(args = process.argv.slice(2)) {
     const outputDir = argumentPath("--output");
     const evidenceDir = argumentPath("--evidence-output");
     const historyPath = argumentPath("--public-histories");
+    const attemptDirectory = argumentPath("--attempt-output");
+    const argumentValue = (flag) => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : undefined; };
+    const attemptRecord = attemptDirectory === undefined ? undefined : {
+      directory: attemptDirectory, runId: argumentValue("--attempt-run-id"),
+      runAttempt: argumentValue("--attempt-number") === undefined ? 1 : Number(argumentValue("--attempt-number")),
+      sourceCommit: argumentValue("--source-commit"), workflowPath: "local"
+    };
     let publicHistories = [];
     if (historyPath) {
       const evidence = JSON.parse(fs.readFileSync(historyPath, "utf8"));
       publicHistories = Array.isArray(evidence) ? evidence : evidence.histories;
       if (!Array.isArray(publicHistories)) throw new Error("invalid_public_history_input");
     }
-    await runDaily({ outputDir, evidenceDir, publicHistories,
+    await runDaily({ outputDir, evidenceDir, publicHistories, attemptRecord,
       onDiagnostics: (diagnostics) => console.log(JSON.stringify(diagnostics)) });
     return 0;
   } catch (error) {
