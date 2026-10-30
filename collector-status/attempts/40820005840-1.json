@@ -1,0 +1,227 @@
+{
+  "kind": "workflow_observation",
+  "schemaVersion": 1,
+  "repository": "amindjapan/cw-work-agent-daily",
+  "workflowPath": ".github/workflows/daily.yml",
+  "runId": "40820005840",
+  "runAttempt": 1,
+  "jobId": "123270009435",
+  "sourceCommit": "b6cad17aeac34681e94114d8b25df2e44e4908f8",
+  "runUrl": "https://github.com/amindjapan/cw-work-agent-daily/actions/runs/40820005840",
+  "jobUrl": "https://github.com/amindjapan/cw-work-agent-daily/actions/runs/40820005840/job/123270009435",
+  "workflowStartedAt": "2026-10-29T04:50:42.000Z",
+  "workflowUpdatedAt": "2026-10-29T04:51:09.000Z",
+  "observedAt": "2026-10-30T04:13:20.000Z",
+  "collectorStartedAt": null,
+  "collectorFinishedAt": null,
+  "diagnosticLoggedAt": "2026-10-29T04:51:06.351Z",
+  "diagnostics": {
+    "kind": "collector_diagnostics",
+    "schemaVersion": 1,
+    "aborted": true,
+    "search": {
+      "planned": 13,
+      "attempted": 13,
+      "succeeded": 13,
+      "failed": 0,
+      "notAttempted": 0
+    },
+    "details": {
+      "observed": 558,
+      "attempted": 23,
+      "succeeded": 4,
+      "failed": 19,
+      "notAttempted": 535
+    },
+    "events": [
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "search",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "success"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "extraction_failed"
+      },
+      {
+        "stage": "detail",
+        "httpStatus": 200,
+        "reason": "captcha_required"
+      }
+    ]
+  },
+  "stepResults": {
+    "tests": "SUCCEEDED",
+    "collection": "FAILED",
+    "snapshot": "SKIPPED",
+    "repositoryPersistence": "SKIPPED",
+    "publication": "SKIPPED"
+  },
+  "contentSha256": "bfa8f45beae9310ce2e80e65f2dc1df854e14bb567a8600674e791d0222cdc82"
+}

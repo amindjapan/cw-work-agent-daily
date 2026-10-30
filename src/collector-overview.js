@@ -3,6 +3,7 @@
 const { projectPublicAttempt } = require("./collector-attempt");
 const { projectPublicPatrol } = require("./public-patrol-import");
 const { projectPublicSummary } = require("./prepare-public-artifact");
+const { projectWorkflowObservation } = require("./workflow-observation");
 const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
 const { types } = require("node:util");
 
@@ -55,7 +56,24 @@ function notFuture(value, asOf) {
 
 function count(value) { return Number.isSafeInteger(value) && value >= 0; }
 
-function attemptView(record, asOf) {
+function attemptView(record, observationInput, asOf) {
+  if (record !== null && observationInput !== null) fail();
+  if (observationInput !== null) {
+    const observation = projectWorkflowObservation(observationInput);
+    for (const stamp of [observation.workflowStartedAt, observation.workflowUpdatedAt, observation.observedAt,
+      observation.diagnosticLoggedAt, observation.collectorStartedAt, observation.collectorFinishedAt]) notFuture(stamp, asOf);
+    const lastStop = observation.diagnostics.events.filter((event) => STOP_REASONS.has(event.reason)).at(-1) ?? null;
+    if (!lastStop) fail();
+    return { availability: "AVAILABLE", reportedState: "ABORTED", sourceKind: "WORKFLOW_OBSERVATION",
+      runId: observation.runId, runAttempt: observation.runAttempt, sourceCommit: observation.sourceCommit,
+      workflowPath: observation.workflowPath, startedAt: observation.collectorStartedAt, finishedAt: observation.collectorFinishedAt,
+      diagnostics: observation.diagnostics, localPersistence: "UNKNOWN",
+      repositoryPersistence: observation.stepResults.repositoryPersistence, publication: observation.stepResults.publication,
+      reasonCode: lastStop.reason, lastStop, workflowStartedAt: observation.workflowStartedAt,
+      workflowUpdatedAt: observation.workflowUpdatedAt, observationRecordedAt: observation.observedAt,
+      diagnosticLoggedAt: observation.diagnosticLoggedAt, stepResults: observation.stepResults,
+      runUrl: observation.runUrl, jobUrl: observation.jobUrl, sourceEvidenceSha256: observation.contentSha256 };
+  }
   if (record === null) return { availability: "UNAVAILABLE", reportedState: "UNKNOWN", runId: null, runAttempt: null,
     sourceCommit: null, workflowPath: null, startedAt: null, finishedAt: null, diagnostics: null,
     localPersistence: "UNKNOWN", repositoryPersistence: "UNKNOWN", publication: "UNKNOWN", reasonCode: "attempt_unavailable", lastStop: null };
@@ -125,7 +143,7 @@ function displayJobs(savedMaterial, patrol) {
 
 function buildCollectorOverview(input = {}) {
   const options = plainCopy(input);
-  const allowed = ["latestAttempt", "savedSummary", "verifiedSuccess", "patrol", "asOf"];
+  const allowed = ["latestAttempt", "workflowObservation", "savedSummary", "verifiedSuccess", "patrol", "asOf"];
   if (!options || Array.isArray(options) || Object.keys(options).some((key) => !allowed.includes(key))) fail();
   const asOf = time(options.asOf);
   // Initial implementation has no adapter that can establish a last successful
@@ -133,7 +151,7 @@ function buildCollectorOverview(input = {}) {
   if (options.verifiedSuccess !== undefined && options.verifiedSuccess !== null) {
     throw new Error("unsupported_verified_success_evidence");
   }
-  const lastAttempt = attemptView(options.latestAttempt ?? null, asOf);
+  const lastAttempt = attemptView(options.latestAttempt ?? null, options.workflowObservation ?? null, asOf);
   const savedMaterial = savedView(options.savedSummary ?? null, asOf);
   const patrol = projectPublicPatrol(options.patrol ?? null);
   if (patrol.run) {
@@ -149,7 +167,8 @@ function buildCollectorOverview(input = {}) {
   const view = { kind: "collector_overview", schemaVersion: 1, asOf, lastAttempt, savedMaterial,
     lastVerifiedSuccess: { status: "UNKNOWN", completedAt: null }, patrol, displayJobs: displayJobs(savedMaterial, patrol),
     limitationCodes: ["LAST_SUCCESS_NOT_ESTABLISHED", "SAVED_MATERIAL_IS_NOT_SUCCESS_EVIDENCE",
-      "PATROL_SEPARATE_FROM_COLLECTOR", "FIT_IS_NOT_APPLICATION_APPROVAL", "PUBLICATION_NOT_INDEPENDENTLY_VERIFIED"] };
+      "PATROL_SEPARATE_FROM_COLLECTOR", "FIT_IS_NOT_APPLICATION_APPROVAL", "PUBLICATION_NOT_INDEPENDENTLY_VERIFIED",
+      "EXPLICIT_IMPORT_SCOPE_ONLY", "AS_OF_IS_DISPLAY_REFERENCE"] };
   const freeze = (value) => {
     if (value && typeof value === "object") { for (const item of Object.values(value)) freeze(item); Object.freeze(value); }
     return value;
@@ -194,12 +213,13 @@ function renderCollectorOverview(input) {
   const unsupported = (patrol.scope?.unsupportedSources || []).map((source) => `<li>${escape(source)}: UNKNOWN（未対応）</li>`).join("");
   const sources = (patrol.sources || []).map((source) => `<li>${escape(source.platform)} / ${escape(source.sourceKind)} / ${escape(source.availability)} / 観測数=${escape(source.observedCount)} / ${publicLink(source.url)}</li>`).join("");
   const attemptState = attempt.reportedState === "RUNNING" && attempt.finishedAt === null ? "RUNNING（記録上・終了未確認）" : attempt.reportedState;
+  const workflowEvidence = attempt.sourceKind === "WORKFLOW_OBSERVATION" ? `<section><h2>元 workflow の独立観測</h2><p><a href="${escape(attempt.runUrl)}" target="_blank" rel="noreferrer noopener">元 run の記録</a> / <a href="${escape(attempt.jobUrl)}" target="_blank" rel="noreferrer noopener">元 job の記録</a></p><dl><dt>workflow 開始</dt><dd>${escape(attempt.workflowStartedAt)}</dd><dt>workflow 更新</dt><dd>${escape(attempt.workflowUpdatedAt)}</dd><dt>観測記録時刻</dt><dd>${escape(attempt.observationRecordedAt)}</dd><dt>診断ログ時刻</dt><dd>${escape(attempt.diagnosticLoggedAt)}</dd><dt>tests</dt><dd>${escape(attempt.stepResults.tests)}</dd><dt>collection</dt><dd>${escape(attempt.stepResults.collection)}</dd><dt>snapshot</dt><dd>${escape(attempt.stepResults.snapshot)}</dd><dt>元 run の Git 保存</dt><dd>${escape(attempt.stepResults.repositoryPersistence)}</dd><dt>元 run の Pages 公開</dt><dd>${escape(attempt.stepResults.publication)}</dd></dl><p>workflow の時刻と Collector の開始・終了時刻は別です。後の状態表示資料の Git 保存を、元の収集や元 run の保存成功へ読み替えません。</p><p>観測資料の整合ハッシュ: ${escape(attempt.sourceEvidenceSha256)}</p></section>` : "";
   return `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collector と公開巡回の状態</title>
 <style>body{font-family:system-ui,sans-serif;line-height:1.7;color:#172b35;background:#f2f5f6;margin:0}main{max-width:960px;margin:auto;padding:24px}section{background:white;padding:18px;margin:16px 0;border:1px solid #cbd7db;border-radius:8px}h1{font-size:1.6rem}h2{font-size:1.15rem}dl{display:grid;grid-template-columns:minmax(140px,1fr) 2fr;gap:6px}dd{margin:0;overflow-wrap:anywhere}a{color:#145d82}small{color:#455b66}</style></head><body><main>
-<h1>Collector と公開巡回の状態</h1><p>判定時刻: ${escape(view.asOf)}</p>
-<section><h2>最終試行の記録</h2><dl><dt>記録の有無</dt><dd>${escape(attempt.availability)}</dd><dt>収集状態（記録上）</dt><dd>${escape(attemptState)}</dd><dt>runId / runAttempt</dt><dd>${escape(attempt.runId)} / ${escape(attempt.runAttempt)}</dd><dt>sourceCommit</dt><dd>${escape(attempt.sourceCommit)}</dd><dt>開始</dt><dd>${escape(attempt.startedAt)}</dd><dt>試行終了</dt><dd>${escape(attempt.finishedAt)}</dd><dt>ローカル保存</dt><dd>${escape(attempt.localPersistence)}</dd><dt>Git 保存</dt><dd>${escape(attempt.repositoryPersistence)}</dd><dt>Pages 公開段階</dt><dd>${escape(attempt.publication)}</dd><dt>固定理由コード</dt><dd>${escape(attempt.reasonCode)}</dd><dt>直近の明示停止</dt><dd>stage=${escape(attempt.lastStop?.stage)} / HTTP=${escape(attempt.lastStop?.httpStatus)} / reason=${escape(attempt.lastStop?.reason)}</dd></dl>${counterLine("検索", attempt.diagnostics?.search, "planned")}${counterLine("詳細", attempt.diagnostics?.details, "observed")}<p>各段階は独立した記録です。exit 0・aborted false・試行完了だけでは収集成功を認定しません。</p></section>
-<section><h2>保存済み資料</h2><dl><dt>状態</dt><dd>${escape(saved.status)}</dd><dt>generatedAt（開始時刻）</dt><dd>${escape(saved.generatedAt)}</dd><dt>取得試行完了</dt><dd>${escape(saved.attemptsCompletedAt)}</dd><dt>最終試行との開始順</dt><dd>${escape(saved.relationToLatestAttempt)}</dd><dt>取得案件数</dt><dd>${escape(counts.observedJobs)}</dd><dt>機械候補数</dt><dd>${escape(counts.machineCandidates)}</dd><dt>詳細確認済み候補数</dt><dd>${escape(counts.detailConfirmed)}</dd></dl></section>
+<h1>Collector と公開巡回の状態</h1><p>表示基準時刻: ${escape(view.asOf)}</p><p>表示は明示的に取り込んだ記録の範囲です。asOf は表示基準であり、新しい観測を行った時刻ではありません。取り込み後の run は自動反映しません。Actions の自動監視・取得は行いません。</p><p>取り込み元の観測時刻: ${escape(attempt.observationRecordedAt)}</p><p><a href="https://github.com/amindjapan/cw-work-agent-daily/actions/workflows/collector-status-view.yml?query=branch%3Amain" target="_blank" rel="noreferrer noopener">Collector Status View (no collection) · main</a></p>
+<section><h2>取り込み範囲の最終確認済み試行</h2><dl><dt>記録の有無</dt><dd>${escape(attempt.availability)}</dd><dt>収集状態（記録上）</dt><dd>${escape(attemptState)}</dd><dt>runId / runAttempt</dt><dd>${escape(attempt.runId)} / ${escape(attempt.runAttempt)}</dd><dt>sourceCommit</dt><dd>${escape(attempt.sourceCommit)}</dd><dt>開始</dt><dd>${escape(attempt.startedAt)}</dd><dt>試行終了</dt><dd>${escape(attempt.finishedAt)}</dd><dt>ローカル保存</dt><dd>${escape(attempt.localPersistence)}</dd><dt>Git 保存</dt><dd>${escape(attempt.repositoryPersistence)}</dd><dt>Pages 公開段階</dt><dd>${escape(attempt.publication)}</dd><dt>固定理由コード</dt><dd>${escape(attempt.reasonCode)}</dd><dt>直近の明示停止</dt><dd>stage=${escape(attempt.lastStop?.stage)} / HTTP=${escape(attempt.lastStop?.httpStatus)} / reason=${escape(attempt.lastStop?.reason)}</dd></dl>${counterLine("検索", attempt.diagnostics?.search, "planned")}${counterLine("詳細", attempt.diagnostics?.details, "observed")}<p>各段階は独立した記録です。exit 0・aborted false・試行完了だけでは収集成功を認定しません。</p></section>
+${workflowEvidence}<section><h2>保存済み資料</h2><dl><dt>状態</dt><dd>${escape(saved.status)}</dd><dt>generatedAt（開始時刻）</dt><dd>${escape(saved.generatedAt)}</dd><dt>取得試行完了</dt><dd>${escape(saved.attemptsCompletedAt)}</dd><dt>最終試行との開始順</dt><dd>${escape(saved.relationToLatestAttempt)}</dd><dt>取得案件数</dt><dd>${escape(counts.observedJobs)}</dd><dt>機械候補数</dt><dd>${escape(counts.machineCandidates)}</dd><dt>詳細確認済み候補数</dt><dd>${escape(counts.detailConfirmed)}</dd></dl></section>
 <section><h2>最終成功として独立に検証できた収集</h2><p>UNKNOWN</p><p>初版では完全な入力ハッシュと取得元証拠を検証する接続がありません。保存資料の存在を成功へ読み替えません。</p></section>
 <section><h2>独立した公開巡回</h2><p>状態: ${escape(patrol.availability)} / 観測数: ${escape(patrol.counts?.observations)} / 一意案件数: ${escape(patrol.counts?.uniqueJobs)}</p><p>宣言された対象: ${escape((patrol.scope?.declaredPlatforms || []).join(", ") || "UNKNOWN")}</p><p>巡回は複数の取得元を扱う別の資料です。初版の取込み対応は CrowdWorks のみで、他の取得元は UNKNOWN のままです。Collector の機械候補数や推薦へ合算しません。</p><ul>${sources}</ul><ul>${unsupported}</ul></section>
 <section><h2>表示用にまとめた同一 ID・URL の観測</h2><p>出典ごとの観測を保持します。適合や安全審査が UNKNOWN の場合は STOP_REQUIRED。適合評価は応募承認を意味しません。</p><ul>${jobs || "<li>確認できる案件一覧はありません。件数不明を0件とは扱いません。</li>"}</ul></section>

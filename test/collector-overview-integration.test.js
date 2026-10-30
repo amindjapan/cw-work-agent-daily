@@ -24,6 +24,11 @@ function fixture(t) {
   return { dir, summaryFile, summary, outputDir: path.join(dir, "site"), asOf: AS_OF };
 }
 
+function options(f, overrides = {}) {
+  return { summaryFile: f.summaryFile, attemptFile: f.attemptFile, patrolFile: f.patrolFile,
+    outputDir: f.outputDir, asOf: f.asOf, ...overrides };
+}
+
 function attempt() {
   const begun = createAttempt({ runId: "local-11111111-1111-4111-8111-111111111111", runAttempt: 1,
     sourceCommit: "a".repeat(40), workflowPath: "local", startedAt: START });
@@ -50,13 +55,17 @@ test("offline composition separates failed saved material, missing attempt, unkn
   const f = fixture(t);
   const before = fs.readFileSync(f.summaryFile);
   const fetch = t.mock.method(global, "fetch", () => { throw new Error("network_forbidden"); });
-  const result = prepareCollectorOverview(f);
+  const result = prepareCollectorOverview(options(f));
   assert.equal(result.view.savedMaterial.status, "FAILED_LEGACY");
   assert.equal(result.view.lastAttempt.availability, "UNAVAILABLE");
   assert.equal(result.view.lastVerifiedSuccess.status, "UNKNOWN");
   assert.equal(result.view.patrol.availability, "UNAVAILABLE");
   assert.equal(result.view.patrol.counts.uniqueJobs, null);
   assert.equal(fetch.mock.calls.length, 0);
+  const status = JSON.parse(fs.readFileSync(path.join(f.outputDir, "collector-status.json"), "utf8"));
+  assert.equal(status.schemaVersion, 2);
+  assert.equal(status.attempt, null);
+  assert.equal(status.workflowObservation, null);
   assert.deepEqual(fs.readFileSync(f.summaryFile), before);
   assert.deepEqual(fs.readFileSync(path.join(f.outputDir, "latest.json")), before);
   const html = fs.readFileSync(path.join(f.outputDir, "index.html"), "utf8");
@@ -72,7 +81,7 @@ test("explicit attempt and limited patrol compose with public citations and fixe
   fs.writeFileSync(f.attemptFile, JSON.stringify(attempt()));
   fs.writeFileSync(f.patrolFile, JSON.stringify(patrol()));
   const before = [f.summaryFile, f.attemptFile, f.patrolFile].map((p) => fs.readFileSync(p));
-  const result = prepareCollectorOverview(f);
+  const result = prepareCollectorOverview(options(f));
   assert.equal(result.view.lastAttempt.reportedState, "ABORTED");
   assert.equal(result.view.lastAttempt.diagnostics.search.notAttempted, 12);
   assert.equal(result.view.patrol.availability, "LIMITED");
@@ -89,7 +98,7 @@ test("explicit attempt and limited patrol compose with public citations and fixe
 
 test("overview JSON files require explicit staging opt-in and strict projection", (t) => {
   const f = fixture(t);
-  prepareCollectorOverview(f);
+  prepareCollectorOverview(options(f));
   const normal = preparePublicArtifact({ sourceDir: f.outputDir, outputDir: path.join(f.dir, "normal") });
   assert.equal(normal.copiedFiles.includes("collector-status.json"), false);
   assert.equal(normal.copiedFiles.includes("public-patrol.json"), false);
@@ -106,7 +115,7 @@ test("overview JSON files require explicit staging opt-in and strict projection"
 
 test("overview staging rebuilds HTML, Markdown and marker from projected inputs only", (t) => {
   const f = fixture(t);
-  prepareCollectorOverview(f);
+  prepareCollectorOverview(options(f));
   fs.writeFileSync(path.join(f.outputDir, "index.html"), `<script>fetch('https://example.invalid')</script>${PRIVATE}`);
   fs.writeFileSync(path.join(f.outputDir, "latest.md"), PRIVATE);
   fs.writeFileSync(path.join(f.outputDir, ".nojekyll"), PRIVATE);
@@ -126,7 +135,7 @@ test("partial staging write failure leaves original inputs intact and cannot pas
     if (file === path.join(f.outputDir, "index.html")) throw new Error(PRIVATE);
     return write(file, ...args);
   });
-  assert.throws(() => prepareCollectorOverview(f));
+  assert.throws(() => prepareCollectorOverview(options(f)));
   mock.mock.restore();
   assert.deepEqual(fs.readFileSync(f.summaryFile), original);
   const selected = path.join(f.dir, "unsafe");
@@ -151,7 +160,7 @@ test("input mutation, missing file, unknown private data and duplicate JSON keys
     if (mode === "duplicate") fs.writeFileSync(f.summaryFile, '{"generatedAt":"old","generatedAt":"new"}');
     if (mode === "missing") f.patrolFile = path.join(f.dir, "missing.json");
     if (mode === "utf8") fs.writeFileSync(f.summaryFile, Buffer.from([0xff, 0xfe]));
-    assert.throws(() => prepareCollectorOverview(f));
+    assert.throws(() => prepareCollectorOverview(options(f)));
     assert.equal(fs.existsSync(f.outputDir), false);
   }
 });
@@ -160,9 +169,9 @@ test("an existing nonempty output or input overlap is never replaced", (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.outputDir);
   fs.writeFileSync(path.join(f.outputDir, "previous"), "preserved");
-  assert.throws(() => prepareCollectorOverview(f));
+  assert.throws(() => prepareCollectorOverview(options(f)));
   assert.equal(fs.readFileSync(path.join(f.outputDir, "previous"), "utf8"), "preserved");
-  assert.throws(() => prepareCollectorOverview({ ...f, outputDir: f.dir }));
+  assert.throws(() => prepareCollectorOverview(options(f, { outputDir: f.dir })));
 });
 
 test("public status projection refuses Proxy input before any user trap", () => {
@@ -192,7 +201,7 @@ test("the real composition CLI is offline and emits no input content on rejectio
 
 test("the real public staging CLI loads overview projectors in a fresh offline process", (t) => {
   const f = fixture(t);
-  prepareCollectorOverview(f);
+  prepareCollectorOverview(options(f));
   const preload = path.join(f.dir, "deny-network.cjs");
   fs.writeFileSync(preload, 'global.fetch = async () => { throw new Error("network_forbidden"); };\n');
   const outputDir = path.join(f.dir, "staged");
@@ -204,4 +213,56 @@ test("the real public staging CLI loads overview projectors in a fresh offline p
   assert.equal(reported.status, "public_artifact_prepared");
   assert.equal(reported.copiedFiles.length, 6);
   assert.match(fs.readFileSync(path.join(outputDir, "index.html"), "utf8"), /FAILED_LEGACY/);
+});
+
+test("fixture bookkeeping remains outside the strict public composition options", (t) => {
+  const f = fixture(t);
+  assert.throws(() => prepareCollectorOverview(f), /overview_invalid_options/);
+  assert.equal(fs.existsSync(f.outputDir), false);
+});
+
+test("composition and staging still accept explicitly empty output directories", (t) => {
+  const f = fixture(t);
+  fs.mkdirSync(f.outputDir);
+  prepareCollectorOverview(options(f));
+  const staging = path.join(f.dir, "empty-staging");
+  fs.mkdirSync(staging);
+  const result = preparePublicArtifact({ sourceDir: f.outputDir, outputDir: staging, includeOverview: true });
+  assert.equal(result.copiedFiles.length, 6);
+  assert.equal(fs.readFileSync(path.join(staging, ".nojekyll"), "utf8"), "");
+});
+
+test("a file created after the empty-directory check is never overwritten during composition", (t) => {
+  const f = fixture(t), target = path.join(f.outputDir, "latest.json");
+  const mkdir = fs.mkdirSync, write = fs.writeFileSync;
+  let inserted = false;
+  t.mock.method(fs, "mkdirSync", (directory, ...args) => {
+    const result = mkdir(directory, ...args);
+    if (!inserted && path.resolve(directory) === f.outputDir) {
+      inserted = true;
+      write(target, "SYNTHETIC_COMPETING_FILE", { flag: "wx" });
+    }
+    return result;
+  });
+  assert.throws(() => prepareCollectorOverview(options(f)), { code: "EEXIST" });
+  assert.equal(fs.readFileSync(target, "utf8"), "SYNTHETIC_COMPETING_FILE");
+  assert.equal(fs.readFileSync(f.summaryFile, "utf8"), `${JSON.stringify(f.summary, null, 2)}\n`);
+});
+
+test("a file created after staging validation is never overwritten by public artifact copying", (t) => {
+  const f = fixture(t);
+  prepareCollectorOverview(options(f));
+  const outputDir = path.join(f.dir, "raced-staging"), target = path.join(outputDir, "index.html");
+  const mkdir = fs.mkdirSync, write = fs.writeFileSync;
+  let inserted = false;
+  t.mock.method(fs, "mkdirSync", (directory, ...args) => {
+    const result = mkdir(directory, ...args);
+    if (!inserted && path.resolve(directory) === outputDir) {
+      inserted = true;
+      write(target, "SYNTHETIC_COMPETING_MARKUP", { flag: "wx" });
+    }
+    return result;
+  });
+  assert.throws(() => preparePublicArtifact({ sourceDir: f.outputDir, outputDir, includeOverview: true }), { code: "EEXIST" });
+  assert.equal(fs.readFileSync(target, "utf8"), "SYNTHETIC_COMPETING_MARKUP");
 });

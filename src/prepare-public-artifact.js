@@ -8,6 +8,7 @@ const { normalizeText } = require("./model");
 const { parseStrictJsonBytes } = require("./strict-json");
 const { projectPublicAttempt } = require("./collector-attempt");
 const { projectPublicPatrol } = require("./public-patrol-import");
+const { projectWorkflowObservation } = require("./workflow-observation");
 
 const PUBLIC_FILES = ["index.html", "latest.json", "latest.md", ".nojekyll"];
 const OVERVIEW_FILES = ["collector-status.json", "public-patrol.json"];
@@ -190,24 +191,43 @@ function archiveFilename(name) {
 }
 
 function projectCollectorStatus(value) {
-  if (isProxy(value) || !isObject(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
-    || Reflect.ownKeys(value).some((key) => !["kind", "schemaVersion", "availability", "attempt", "asOf"].includes(key))
-    || Object.values(Object.getOwnPropertyDescriptors(value)).some((descriptor) => !Object.hasOwn(descriptor, "value"))
-    || value.kind !== "collector_status" || value.schemaVersion !== 1
-    || !isTimestamp(value.asOf)
-    || !["AVAILABLE", "UNAVAILABLE"].includes(value.availability)
-    || (value.availability === "UNAVAILABLE" ? value.attempt !== null : value.attempt === null)) {
+  if (isProxy(value) || !isObject(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
     throw new Error("invalid_collector_status");
   }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Object.values(descriptors).some((descriptor) => !Object.hasOwn(descriptor, "value"))
+    || !Object.hasOwn(descriptors, "kind") || !Object.hasOwn(descriptors, "schemaVersion")
+    || descriptors.kind.value !== "collector_status" || ![1, 2].includes(descriptors.schemaVersion.value)) {
+    throw new Error("invalid_collector_status");
+  }
+  const keys = ["kind", "schemaVersion", "availability", "attempt", "asOf",
+    ...(value.schemaVersion === 2 ? ["workflowObservation"] : [])];
+  if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))
+    || Reflect.ownKeys(value).some((key) => !keys.includes(key)) || !isTimestamp(value.asOf)
+    || !["AVAILABLE", "UNAVAILABLE"].includes(value.availability)) throw new Error("invalid_collector_status");
   const attempt = value.attempt === null ? null : projectPublicAttempt(value.attempt);
+  const workflowObservation = value.schemaVersion === 2 && value.workflowObservation !== null
+    ? projectWorkflowObservation(value.workflowObservation) : null;
+  if (attempt !== null && workflowObservation !== null
+    || (value.availability === "UNAVAILABLE") !== (attempt === null && workflowObservation === null)) {
+    throw new Error("invalid_collector_status");
+  }
   if (attempt && (attempt.startedAt > value.asOf || attempt.finishedAt !== null && attempt.finishedAt > value.asOf)) {
     throw new Error("invalid_collector_status");
   }
-  return { kind: "collector_status", schemaVersion: 1, availability: value.availability, asOf: value.asOf, attempt };
+  if (workflowObservation && [workflowObservation.workflowStartedAt, workflowObservation.workflowUpdatedAt,
+    workflowObservation.observedAt, workflowObservation.diagnosticLoggedAt].some((stamp) => stamp !== null && stamp > value.asOf)) {
+    throw new Error("invalid_collector_status");
+  }
+  return { kind: "collector_status", schemaVersion: value.schemaVersion, availability: value.availability, asOf: value.asOf,
+    attempt, ...(value.schemaVersion === 2 ? { workflowObservation } : {}) };
 }
 
 function overviewMarkdown(view) {
-  return ["# Collector status", "", `As of: ${view.asOf}`, "Last verified success: UNKNOWN", "",
+  return ["# Collector status", "", `表示基準時刻（asOf）: ${view.asOf}`, "Last verified success: UNKNOWN", "",
+    "取り込み範囲の最終確認済み試行を表示します。取り込み後の run は自動反映しません。",
+    `取り込み元の観測時刻（observationRecordedAt）: ${view.lastAttempt.observationRecordedAt ?? "UNKNOWN"}`,
+    "asOf は表示基準であり、新しい観測の証拠ではありません。Actions の自動監視・取得は行いません。", "",
     "See index.html for the separately attributed attempt, saved material and patrol evidence.", ""].join("\n");
 }
 
@@ -262,7 +282,7 @@ function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false }
     // Resolve only when composing after this module has loaded; overview uses
     // the existing public summary projector and has no I/O on import.
     const { buildCollectorOverview, renderCollectorOverview } = require("./collector-overview");
-    const view = buildCollectorOverview({ latestAttempt: status.attempt, savedSummary: json("latest.json"),
+    const view = buildCollectorOverview({ latestAttempt: status.attempt, workflowObservation: status.workflowObservation ?? null, savedSummary: json("latest.json"),
       verifiedSuccess: null, patrol: json("public-patrol.json"), asOf: status.asOf });
     // New overview mode always renders from projected data. It never copies
     // arbitrary HTML/Markdown from a staging directory into a public artifact.
@@ -274,7 +294,7 @@ function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false }
   for (const { relative, content } of copies) {
     const destination = path.join(output, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.writeFileSync(destination, content);
+    fs.writeFileSync(destination, content, { flag: "wx" });
   }
   return { copiedFiles: selected.map((relative) => relative.split(path.sep).join("/")) };
 }

@@ -337,4 +337,4 @@ function createAttemptStore(value) {
   };
 }
 
-module.exports = { createAttempt, finishAttempt, projectPublicAttempt, createAttemptStore, selectLatestAttempt };
+module.exports = { createAttempt, finishAttempt, projectPublicAttempt, createAttemptStore, selectLatestAttempt, projectDiagnostics };
