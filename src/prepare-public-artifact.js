@@ -9,6 +9,7 @@ const { parseStrictJsonBytes } = require("./strict-json");
 const { projectPublicAttempt } = require("./collector-attempt");
 const { projectPublicPatrol } = require("./public-patrol-import");
 const { projectWorkflowObservation } = require("./workflow-observation");
+const { projectReconstructionManifest } = require("./reconstructed-baseline");
 
 const PUBLIC_FILES = ["index.html", "latest.json", "latest.md", ".nojekyll"];
 const OVERVIEW_FILES = ["collector-status.json", "public-patrol.json"];
@@ -224,11 +225,17 @@ function projectCollectorStatus(value) {
 }
 
 function overviewMarkdown(view) {
+  const reconstruction = view.reconstruction ? ["", "## 復元基準：Git保存資料からの再構成", "当時の配信物との完全一致は未検証です。",
+    "ここに示す由来・hashは保持した復元基準で、最新保存資料・表示時刻とは分離しています。最新の保存資料が同じ inputCommit に由来するという認定ではありません。",
+    `inputCommit: ${view.reconstruction.inputCommit}`, `sourceCodeBaseCommit: ${view.reconstruction.sourceCodeBaseCommit}`,
+    `reconstructedAt: ${view.reconstruction.reconstructedAt}`,
+    `未取得資料: ${view.reconstruction.missingMaterial.join(", ")}`,
+    ...view.reconstruction.sourceInputs.map((source) => `${source.repositoryPath} -> ${source.baselinePath}: bytes=${source.bytes}, JSON SHA256=${source.sha256}, Git blob SHA1=${source.gitBlobSha}`)] : [];
   return ["# Collector status", "", `表示基準時刻（asOf）: ${view.asOf}`, "Last verified success: UNKNOWN", "",
     "取り込み範囲の最終確認済み試行を表示します。取り込み後の run は自動反映しません。",
     `取り込み元の観測時刻（observationRecordedAt）: ${view.lastAttempt.observationRecordedAt ?? "UNKNOWN"}`,
     "asOf は表示基準であり、新しい観測の証拠ではありません。Actions の自動監視・取得は行いません。", "",
-    "See index.html for the separately attributed attempt, saved material and patrol evidence.", ""].join("\n");
+    "See index.html for the separately attributed attempt, saved material and patrol evidence.", ...reconstruction, ""].join("\n");
 }
 
 function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false } = {}) {
@@ -254,6 +261,7 @@ function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false }
 
   const selected = [...PUBLIC_FILES];
   if (includeOverview) selected.push(...OVERVIEW_FILES);
+  if (includeOverview && fs.existsSync(path.join(source, "reconstruction.json"))) selected.push("reconstruction.json");
   const archive = path.join(source, "archive");
   if (fs.existsSync(archive)) {
     const stat = fs.lstatSync(archive);
@@ -272,7 +280,9 @@ function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false }
     try { summary = parseStrictJsonBytes(original).value; }
     catch { throw new Error("invalid_public_summary"); }
     const projected = relative === "collector-status.json" ? projectCollectorStatus(summary)
-      : relative === "public-patrol.json" ? projectPublicPatrol(summary) : projectPublicSummary(summary);
+      : relative === "public-patrol.json" ? projectPublicPatrol(summary)
+        : relative === "reconstruction.json" ? projectReconstructionManifest(summary) : projectPublicSummary(summary);
+    if (relative === "reconstruction.json" && !isDeepStrictEqual(summary, projected)) throw new Error("invalid_public_reconstruction");
     return { relative, content: isDeepStrictEqual(summary, projected) ? original
       : Buffer.from(`${JSON.stringify(projected, null, 2)}\n`, "utf8") };
   });
@@ -283,7 +293,8 @@ function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false }
     // the existing public summary projector and has no I/O on import.
     const { buildCollectorOverview, renderCollectorOverview } = require("./collector-overview");
     const view = buildCollectorOverview({ latestAttempt: status.attempt, workflowObservation: status.workflowObservation ?? null, savedSummary: json("latest.json"),
-      verifiedSuccess: null, patrol: json("public-patrol.json"), asOf: status.asOf });
+      verifiedSuccess: null, patrol: json("public-patrol.json"),
+      reconstruction: copies.some((copy) => copy.relative === "reconstruction.json") ? json("reconstruction.json") : null, asOf: status.asOf });
     // New overview mode always renders from projected data. It never copies
     // arbitrary HTML/Markdown from a staging directory into a public artifact.
     copies.find((copy) => copy.relative === "index.html").content = Buffer.from(renderCollectorOverview(view), "utf8");

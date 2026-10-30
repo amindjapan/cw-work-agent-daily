@@ -1,0 +1,102 @@
+{
+  "generatedAt": "2026-10-12T01:23:05.150Z",
+  "generatedAtJst": "2026/10/12 10:23",
+  "keywords": [
+    "Python データ整理",
+    "ChatGPT リサーチ",
+    "CSV データ整理",
+    "記事 リライト",
+    "Python スクレイピング",
+    "ChatGPT 文章 作成",
+    "データ 整理 自動化",
+    "営業リスト 作成",
+    "Excel VBA",
+    "Notion 設計",
+    "業務効率化",
+    "提案資料 作成",
+    "レポート 作成"
+  ],
+  "attempts": [
+    {
+      "keyword": "Python データ整理",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "ChatGPT リサーチ",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "CSV データ整理",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "記事 リライト",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "Python スクレイピング",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "ChatGPT 文章 作成",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "データ 整理 自動化",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "営業リスト 作成",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "Excel VBA",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "Notion 設計",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "業務効率化",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "提案資料 作成",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    },
+    {
+      "keyword": "レポート 作成",
+      "ok": false,
+      "status": 200,
+      "imported": null
+    }
+  ],
+  "totalJobs": null,
+  "safeCandidates": null,
+  "recommendation": null
+}

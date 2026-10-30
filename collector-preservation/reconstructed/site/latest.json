@@ -1,0 +1,115 @@
+{
+  "generatedAt": "2026-10-29T01:50:50.737Z",
+  "generatedAtJst": "2026/10/29 10:50",
+  "keywords": [
+    "Python データ整理",
+    "ChatGPT リサーチ",
+    "CSV データ整理",
+    "記事 リライト",
+    "Python スクレイピング",
+    "ChatGPT 文章 作成",
+    "データ 整理 自動化",
+    "営業リスト 作成",
+    "Excel VBA",
+    "Notion 設計",
+    "業務効率化",
+    "提案資料 作成",
+    "レポート 作成"
+  ],
+  "attempts": [
+    {
+      "keyword": "Python データ整理",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "ChatGPT リサーチ",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "CSV データ整理",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "記事 リライト",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "Python スクレイピング",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "ChatGPT 文章 作成",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "データ 整理 自動化",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "営業リスト 作成",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "Excel VBA",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "Notion 設計",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "業務効率化",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "提案資料 作成",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    },
+    {
+      "keyword": "レポート 作成",
+      "ok": false,
+      "status": 403,
+      "imported": null,
+      "error": "fetch_failed"
+    }
+  ],
+  "totalJobs": null,
+  "safeCandidates": null,
+  "recommendation": null
+}

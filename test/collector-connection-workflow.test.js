@@ -36,27 +36,52 @@ test("connection: status view is manual main only, without collection or reposit
   ]);
 });
 
-test("connection: both publishers verify preservation and build through the same strict projector", () => {
+test("connection: both publishers explicitly verify the reconstructed baseline before and after projection", () => {
   for (const workflow of [daily, status]) {
     assert.match(workflow, /group: pages\n  cancel-in-progress: false/);
-    const gate = workflow.indexOf("node src/verify-preserved-site.js");
+    const gate = workflow.indexOf("node src/reconstructed-baseline.js");
     const build = workflow.indexOf("node src/build-collector-site.js");
     const project = workflow.indexOf("node src/prepare-public-artifact.js");
     const upload = workflow.indexOf("uses: actions/upload-pages-artifact@v3");
     const deploy = workflow.indexOf("uses: actions/deploy-pages@v4");
     assert.ok(gate > 0 && gate < build && build < project && project < upload && upload < deploy);
-    assert.match(workflow, /--directory collector-preservation\/current --manifest collector-preservation\/manifest\.json/);
+    const baseline = "node src/reconstructed-baseline.js --directory collector-preservation/reconstructed/site --manifest collector-preservation/reconstructed/manifest.json";
+    const verificationCommands = workflow.split("\n").map((line) => line.trim())
+      .filter((line) => line.startsWith("node src/reconstructed-baseline.js"));
+    assert.equal(verificationCommands.length, 2);
+    assert.equal(verificationCommands[0], baseline);
+    const mode = workflow === daily ? "daily" : "status-only";
+    assert.equal(verificationCommands[1], `${baseline} --published-directory "$RUNNER_TEMP/cw-public-artifact" --mode ${mode}`);
+    assert.doesNotMatch(workflow, /node src\/verify-preserved-site\.js|--directory collector-preservation\/current|--manifest collector-preservation\/manifest\.json/);
     assert.match(workflow, /--archives collector-data --observations collector-status\/attempts --patrol public-patrol\/latest\.json/);
+    const builder = workflow.split("\n").find((line) => line.trim().startsWith("node src/build-collector-site.js"));
+    assert.match(builder, /--reconstruction collector-preservation\/reconstructed\/manifest\.json/);
+    assert.match(builder, new RegExp(`--reconstruction-mode ${mode}(?:\\s|$)`));
+    assert.equal((builder.match(/--reconstruction-mode /g) || []).length, 1);
+    assert.doesNotMatch(builder, new RegExp(`--reconstruction-mode ${mode === "daily" ? "status-only" : "daily"}(?:\\s|$)`));
     assert.match(workflow, /--source "\$RUNNER_TEMP\/cw-site-source" --output "\$RUNNER_TEMP\/cw-public-artifact" --overview/);
     assert.match(workflow, /path: \$\{\{ runner\.temp \}\}\/cw-public-artifact/);
     const retention = workflow.indexOf('--published-directory "$RUNNER_TEMP/cw-public-artifact"');
     assert.ok(project < retention && retention < upload);
+    assert.ok(workflow.indexOf("run: npm test") < gate);
     assert.doesNotMatch(workflow.slice(gate), /\balways\(\)|continue-on-error/);
   }
   assert.match(daily, /--summary site\/latest\.json/);
   assert.match(status, /--summary collector-data\/latest\.json/);
   assert.match(daily, /--published-directory "\$RUNNER_TEMP\/cw-public-artifact" --mode daily/);
   assert.match(status, /--published-directory "\$RUNNER_TEMP\/cw-public-artifact" --mode status-only/);
+});
+
+test("connection: Git reconstruction is a separate mode and does not weaken the original artifact verifier", () => {
+  const originalVerifier = read("src/verify-preserved-site.js");
+  assert.equal(crypto.createHash("sha256").update(originalVerifier).digest("hex"),
+    "b949f9f473691a79118c805e30634dab8268601c10ac4490a69191dc51297076");
+  assert.match(originalVerifier, /collector_preservation/);
+  const documentation = read("docs/collector-status-connection.md");
+  assert.match(documentation, /GIT_RECONSTRUCTION/);
+  assert.match(documentation, /NOT_VERIFIED/);
+  assert.match(documentation, /not the previously served Pages artifact/);
+  assert.doesNotMatch(documentation, /must stay out of main and must not be published yet/);
 });
 
 test("connection: stale source is checked before build and again immediately before deploy", () => {

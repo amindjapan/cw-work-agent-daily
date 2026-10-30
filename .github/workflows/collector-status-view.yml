@@ -35,7 +35,7 @@ jobs:
       - name: Run synthetic tests
         run: npm test
 
-      - name: Verify current source and preserved baseline
+      - name: Verify current source and Git reconstruction baseline
         shell: bash
         run: |
           set -euo pipefail
@@ -43,16 +43,16 @@ jobs:
           REMOTE_SOURCE="$(git ls-remote origin refs/heads/main | cut -f1)"
           test -n "$REMOTE_SOURCE"
           test "$EXPECTED_SOURCE" = "$REMOTE_SOURCE"
-          node src/verify-preserved-site.js --directory collector-preservation/current --manifest collector-preservation/manifest.json
+          node src/reconstructed-baseline.js --directory collector-preservation/reconstructed/site --manifest collector-preservation/reconstructed/manifest.json
 
       - name: Build status view without collection
         shell: bash
         run: |
           set -euo pipefail
           VIEW_AS_OF="$(node -e 'console.log(new Date().toISOString())')"
-          node src/build-collector-site.js --summary collector-data/latest.json --archives collector-data --observations collector-status/attempts --patrol public-patrol/latest.json --as-of "$VIEW_AS_OF" --output "$RUNNER_TEMP/cw-site-source"
+          node src/build-collector-site.js --summary collector-data/latest.json --archives collector-data --observations collector-status/attempts --patrol public-patrol/latest.json --reconstruction collector-preservation/reconstructed/manifest.json --reconstruction-mode status-only --as-of "$VIEW_AS_OF" --output "$RUNNER_TEMP/cw-site-source"
           node src/prepare-public-artifact.js --source "$RUNNER_TEMP/cw-site-source" --output "$RUNNER_TEMP/cw-public-artifact" --overview
-          node src/verify-preserved-site.js --directory collector-preservation/current --manifest collector-preservation/manifest.json --published-directory "$RUNNER_TEMP/cw-public-artifact" --mode status-only
+          node src/reconstructed-baseline.js --directory collector-preservation/reconstructed/site --manifest collector-preservation/reconstructed/manifest.json --published-directory "$RUNNER_TEMP/cw-public-artifact" --mode status-only
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

@@ -4,6 +4,7 @@ const { projectPublicAttempt } = require("./collector-attempt");
 const { projectPublicPatrol } = require("./public-patrol-import");
 const { projectPublicSummary } = require("./prepare-public-artifact");
 const { projectWorkflowObservation } = require("./workflow-observation");
+const { projectReconstructionManifest } = require("./reconstructed-baseline");
 const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
 const { types } = require("node:util");
 
@@ -143,7 +144,7 @@ function displayJobs(savedMaterial, patrol) {
 
 function buildCollectorOverview(input = {}) {
   const options = plainCopy(input);
-  const allowed = ["latestAttempt", "workflowObservation", "savedSummary", "verifiedSuccess", "patrol", "asOf"];
+  const allowed = ["latestAttempt", "workflowObservation", "savedSummary", "verifiedSuccess", "patrol", "reconstruction", "asOf"];
   if (!options || Array.isArray(options) || Object.keys(options).some((key) => !allowed.includes(key))) fail();
   const asOf = time(options.asOf);
   // Initial implementation has no adapter that can establish a last successful
@@ -154,6 +155,8 @@ function buildCollectorOverview(input = {}) {
   const lastAttempt = attemptView(options.latestAttempt ?? null, options.workflowObservation ?? null, asOf);
   const savedMaterial = savedView(options.savedSummary ?? null, asOf);
   const patrol = projectPublicPatrol(options.patrol ?? null);
+  const reconstruction = options.reconstruction == null ? null : projectReconstructionManifest(options.reconstruction);
+  if (reconstruction) notFuture(reconstruction.reconstructedAt, asOf);
   if (patrol.run) {
     notFuture(patrol.run.startedAt, asOf);
     notFuture(patrol.run.attemptsCompletedAt, asOf);
@@ -164,7 +167,7 @@ function buildCollectorOverview(input = {}) {
     savedMaterial.relationToLatestAttempt = savedMaterial.generatedAt < lastAttempt.startedAt ? "OLDER_THAN_LATEST_ATTEMPT"
       : savedMaterial.generatedAt > lastAttempt.startedAt ? "NEWER_THAN_LATEST_ATTEMPT" : "SAME_START_TIME_UNVERIFIED";
   }
-  const view = { kind: "collector_overview", schemaVersion: 1, asOf, lastAttempt, savedMaterial,
+  const view = { kind: "collector_overview", schemaVersion: 1, asOf, lastAttempt, savedMaterial, reconstruction,
     lastVerifiedSuccess: { status: "UNKNOWN", completedAt: null }, patrol, displayJobs: displayJobs(savedMaterial, patrol),
     limitationCodes: ["LAST_SUCCESS_NOT_ESTABLISHED", "SAVED_MATERIAL_IS_NOT_SUCCESS_EVIDENCE",
       "PATROL_SEPARATE_FROM_COLLECTOR", "FIT_IS_NOT_APPLICATION_APPROVAL", "PUBLICATION_NOT_INDEPENDENTLY_VERIFIED",
@@ -192,6 +195,9 @@ function renderCollectorOverview(input) {
     || !view.lastVerifiedSuccess || !view.patrol || !Array.isArray(view.displayJobs)) fail();
   const attempt = view.lastAttempt, saved = view.savedMaterial, patrol = view.patrol;
   const counts = saved.counts;
+  // Only source-input identity is displayed. Manifest/files hashes depend on
+  // this generated page and must never be embedded back into its own bytes.
+  const reconstructionBadge = view.reconstruction ? `<section><h2>復元基準：Git保存資料からの再構成</h2><p>当時の配信物との完全一致は未検証です。</p><p>ここに示す由来・hashは保持した復元基準で、最新保存資料・表示時刻とは分離しています。最新の保存資料が同じ inputCommit に由来するという認定ではありません。</p><dl><dt>inputCommit</dt><dd>${escape(view.reconstruction.inputCommit)}</dd><dt>sourceCodeBaseCommit</dt><dd>${escape(view.reconstruction.sourceCodeBaseCommit)}</dd><dt>reconstructedAt</dt><dd>${escape(view.reconstruction.reconstructedAt)}</dd></dl><p>未取得資料: ${escape(view.reconstruction.missingMaterial.join(", "))}</p><ul>${view.reconstruction.sourceInputs.map((source) => `<li>${escape(source.repositoryPath)} → ${escape(source.baselinePath)} / bytes=${escape(source.bytes)} / JSON SHA256=${escape(source.sha256)} / Git blob SHA1=${escape(source.gitBlobSha)}</li>`).join("")}</ul><p>この再構成は、元runの停止・SKIPPED・Collector時刻UNKNOWN・最終成功UNKNOWNを変更しません。</p></section>` : "";
   const sourceById = new Map((patrol.sources || []).map((source) => [source.sourceId, source]));
   const publicLink = (value, label) => {
     const jobId = typeof value === "string" && value.match(/^https:\/\/crowdworks\.jp\/public\/jobs\/([1-9][0-9]{0,31})$/)?.[1];
@@ -218,6 +224,7 @@ function renderCollectorOverview(input) {
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collector と公開巡回の状態</title>
 <style>body{font-family:system-ui,sans-serif;line-height:1.7;color:#172b35;background:#f2f5f6;margin:0}main{max-width:960px;margin:auto;padding:24px}section{background:white;padding:18px;margin:16px 0;border:1px solid #cbd7db;border-radius:8px}h1{font-size:1.6rem}h2{font-size:1.15rem}dl{display:grid;grid-template-columns:minmax(140px,1fr) 2fr;gap:6px}dd{margin:0;overflow-wrap:anywhere}a{color:#145d82}small{color:#455b66}</style></head><body><main>
 <h1>Collector と公開巡回の状態</h1><p>表示基準時刻: ${escape(view.asOf)}</p><p>表示は明示的に取り込んだ記録の範囲です。asOf は表示基準であり、新しい観測を行った時刻ではありません。取り込み後の run は自動反映しません。Actions の自動監視・取得は行いません。</p><p>取り込み元の観測時刻: ${escape(attempt.observationRecordedAt)}</p><p><a href="https://github.com/amindjapan/cw-work-agent-daily/actions/workflows/collector-status-view.yml?query=branch%3Amain" target="_blank" rel="noreferrer noopener">Collector Status View (no collection) · main</a></p>
+${reconstructionBadge}
 <section><h2>取り込み範囲の最終確認済み試行</h2><dl><dt>記録の有無</dt><dd>${escape(attempt.availability)}</dd><dt>収集状態（記録上）</dt><dd>${escape(attemptState)}</dd><dt>runId / runAttempt</dt><dd>${escape(attempt.runId)} / ${escape(attempt.runAttempt)}</dd><dt>sourceCommit</dt><dd>${escape(attempt.sourceCommit)}</dd><dt>開始</dt><dd>${escape(attempt.startedAt)}</dd><dt>試行終了</dt><dd>${escape(attempt.finishedAt)}</dd><dt>ローカル保存</dt><dd>${escape(attempt.localPersistence)}</dd><dt>Git 保存</dt><dd>${escape(attempt.repositoryPersistence)}</dd><dt>Pages 公開段階</dt><dd>${escape(attempt.publication)}</dd><dt>固定理由コード</dt><dd>${escape(attempt.reasonCode)}</dd><dt>直近の明示停止</dt><dd>stage=${escape(attempt.lastStop?.stage)} / HTTP=${escape(attempt.lastStop?.httpStatus)} / reason=${escape(attempt.lastStop?.reason)}</dd></dl>${counterLine("検索", attempt.diagnostics?.search, "planned")}${counterLine("詳細", attempt.diagnostics?.details, "observed")}<p>各段階は独立した記録です。exit 0・aborted false・試行完了だけでは収集成功を認定しません。</p></section>
 ${workflowEvidence}<section><h2>保存済み資料</h2><dl><dt>状態</dt><dd>${escape(saved.status)}</dd><dt>generatedAt（開始時刻）</dt><dd>${escape(saved.generatedAt)}</dd><dt>取得試行完了</dt><dd>${escape(saved.attemptsCompletedAt)}</dd><dt>最終試行との開始順</dt><dd>${escape(saved.relationToLatestAttempt)}</dd><dt>取得案件数</dt><dd>${escape(counts.observedJobs)}</dd><dt>機械候補数</dt><dd>${escape(counts.machineCandidates)}</dd><dt>詳細確認済み候補数</dt><dd>${escape(counts.detailConfirmed)}</dd></dl></section>
 <section><h2>最終成功として独立に検証できた収集</h2><p>UNKNOWN</p><p>初版では完全な入力ハッシュと取得元証拠を検証する接続がありません。保存資料の存在を成功へ読み替えません。</p></section>

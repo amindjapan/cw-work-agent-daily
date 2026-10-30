@@ -12,6 +12,7 @@ const { projectPublicSummary } = require("./prepare-public-artifact");
 const { projectPublicPatrol } = require("./public-patrol-import");
 const { projectWorkflowObservation, selectLatestWorkflowObservation } = require("./workflow-observation");
 const { prepareCollectorOverview } = require("./prepare-collector-overview");
+const { projectReconstructionManifest } = require("./reconstructed-baseline");
 
 const PUBLIC_FILES = ["index.html", "latest.json", "latest.md", ".nojekyll", "collector-status.json", "public-patrol.json"];
 const MAX_INPUT_BYTES = 1024 * 1024;
@@ -32,7 +33,7 @@ function optionsSnapshot(value) {
   requireThat(value && typeof value === "object" && !Array.isArray(value) && !types.isProxy(value)
     && [Object.prototype, null].includes(Object.getPrototypeOf(value)), "invalid_options");
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const allowed = ["summaryFile", "archiveDir", "observationFiles", "patrolFile", "outputDir", "asOf"];
+  const allowed = ["summaryFile", "archiveDir", "observationFiles", "patrolFile", "reconstructionFile", "reconstructionMode", "outputDir", "asOf"];
   requireThat(Reflect.ownKeys(descriptors).every((key) => typeof key === "string" && allowed.includes(key)
     && Object.hasOwn(descriptors[key], "value")), "invalid_options");
   const result = Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [key, descriptor.value]));
@@ -170,11 +171,14 @@ function fileManifest(relative, bytes) { return { path: relative, bytes: bytes.l
 
 function buildCollectorSite(options = {}) {
   try {
-    const { summaryFile, archiveDir, observationFiles, patrolFile, outputDir, asOf } = optionsSnapshot(options);
+    const { summaryFile, archiveDir, observationFiles, patrolFile, reconstructionFile,
+      reconstructionMode = "status-only", outputDir, asOf } = optionsSnapshot(options);
+    requireThat(["status-only", "daily"].includes(reconstructionMode), "invalid_reconstruction_mode");
     requireThat(typeof asOf === "string" && normalizePublicTimestamp(asOf) === asOf, "invalid_as_of");
     const output = explicitPath(outputDir), summaryPath = explicitPath(summaryFile);
     const declaredPaths = [summaryPath, ...observationFiles.map(explicitPath),
       ...(archiveDir === undefined ? [] : [explicitPath(archiveDir)]), ...(patrolFile === undefined ? [] : [explicitPath(patrolFile)])];
+    if (reconstructionFile !== undefined) declaredPaths.push(explicitPath(reconstructionFile));
     noLinks(output);
     declaredPaths.forEach((target) => { noLinks(target); separate(output, target); });
     requireThat(new Set(observationFiles.map(explicitPath)).size === observationFiles.length, "duplicate_input_path");
@@ -195,13 +199,36 @@ function buildCollectorSite(options = {}) {
         patrol.value = projected;
       } catch (error) { if (OWN_ERRORS.has(error)) throw error; fail("invalid_public_patrol"); }
     }
-    [summary, ...archives, ...observations, ...(patrol ? [patrol] : [])].forEach(inputUnchanged);
+    let reconstruction;
+    if (reconstructionFile !== undefined) {
+      reconstruction = readInput(reconstructionFile);
+      try {
+        const original = parseStrictJsonBytes(reconstruction.bytes, { maxBytes: MAX_INPUT_BYTES }).value;
+        reconstruction.value = projectReconstructionManifest(original);
+        requireThat(isDeepStrictEqual(original, reconstruction.value), "noncanonical_reconstruction");
+        requireThat(reconstruction.value.reconstructedAt <= asOf, "reconstruction_in_future");
+        const sources = new Map([["latest.json", summary], ...archives.map((item) => [item.relative, item])]);
+        if (reconstructionMode === "status-only") requireThat(reconstruction.value.sourceInputs.length === sources.size, "reconstruction_source_mismatch");
+        for (const source of reconstruction.value.sourceInputs) {
+          // A daily summary is current evidence, separate from the retained Git
+          // reconstruction. Every archive in that baseline remains immutable.
+          if (reconstructionMode === "daily" && source.baselinePath === "latest.json") continue;
+          const input = sources.get(source.baselinePath);
+          requireThat(input && source.bytes === input.bytes.length && source.sha256 === input.sha256
+            && source.gitBlobSha === crypto.createHash("sha1").update(`blob ${input.bytes.length}\0`).update(input.bytes).digest("hex"),
+          "reconstruction_source_mismatch");
+        }
+      } catch (error) { if (OWN_ERRORS.has(error)) throw error; fail("invalid_reconstruction"); }
+    }
+    [summary, ...archives, ...observations, ...(patrol ? [patrol] : []), ...(reconstruction ? [reconstruction] : [])].forEach(inputUnchanged);
     // Hand the composer only validated snapshots. It must not re-read the paths
     // after archive validation, nor create a temporary input record.
     prepareCollectorOverview({ summaryBytes: summary.bytes, workflowObservation: selected.observation,
-      ...(patrol ? { patrolInput: patrol.value } : {}), outputDir: output, asOf });
-    requireThat(isDeepStrictEqual(fs.readdirSync(output).sort(), [...PUBLIC_FILES].sort()), "unexpected_output_files");
-    const manifestFiles = PUBLIC_FILES.map((relative) => {
+      ...(patrol ? { patrolInput: patrol.value } : {}), ...(reconstruction ? { reconstruction: reconstruction.value } : {}),
+      reconstructionMode, outputDir: output, asOf });
+    const publicFiles = [...PUBLIC_FILES, ...(reconstruction ? ["reconstruction.json"] : [])];
+    requireThat(isDeepStrictEqual(fs.readdirSync(output).sort(), [...publicFiles].sort()), "unexpected_output_files");
+    const manifestFiles = publicFiles.map((relative) => {
       const produced = readInput(path.join(output, relative));
       if (relative === "latest.json") requireThat(produced.sha256 === summary.sha256 && produced.bytes.equals(summary.bytes), "summary_bytes_changed");
       return fileManifest(relative, produced.bytes);
@@ -225,7 +252,7 @@ function buildCollectorSite(options = {}) {
 function buildCollectorSiteCli(args = process.argv.slice(2)) {
   try {
     requireThat(Array.isArray(args), "invalid_arguments");
-    const flags = new Map(), allowed = ["--summary", "--archives", "--observations", "--patrol", "--output", "--as-of"];
+    const flags = new Map(), allowed = ["--summary", "--archives", "--observations", "--patrol", "--reconstruction", "--reconstruction-mode", "--output", "--as-of"];
     for (let index = 0; index < args.length; index += 2) {
       requireThat(allowed.includes(args[index]) && !flags.has(args[index]) && typeof args[index + 1] === "string"
         && args[index + 1].length > 0 && !args[index + 1].startsWith("--"), "invalid_arguments");
@@ -241,7 +268,8 @@ function buildCollectorSiteCli(args = process.argv.slice(2)) {
       requireThat(observationFiles.length <= MAX_OBSERVATIONS, "observation_limit");
     }
     const result = buildCollectorSite({ summaryFile: flags.get("--summary"), archiveDir: flags.get("--archives"),
-      observationFiles, patrolFile: flags.get("--patrol"), outputDir: flags.get("--output"), asOf: flags.get("--as-of") });
+      observationFiles, patrolFile: flags.get("--patrol"), reconstructionFile: flags.get("--reconstruction"),
+      reconstructionMode: flags.get("--reconstruction-mode"), outputDir: flags.get("--output"), asOf: flags.get("--as-of") });
     console.log(JSON.stringify(result));
     return 0;
   } catch {
