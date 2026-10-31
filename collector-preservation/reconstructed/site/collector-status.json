@@ -1,0 +1,59 @@
+{
+  "kind": "collector_status",
+  "schemaVersion": 2,
+  "availability": "AVAILABLE",
+  "asOf": "2026-10-30T04:56:54.296Z",
+  "attempt": null,
+  "workflowObservation": {
+    "kind": "workflow_observation",
+    "schemaVersion": 1,
+    "repository": "amindjapan/cw-work-agent-daily",
+    "workflowPath": ".github/workflows/daily.yml",
+    "runId": "40989042359",
+    "runAttempt": 1,
+    "jobId": "123846739488",
+    "sourceCommit": "b6cad17aeac34681e94114d8b25df2e44e4908f8",
+    "runUrl": "https://github.com/amindjapan/cw-work-agent-daily/actions/runs/40989042359",
+    "jobUrl": "https://github.com/amindjapan/cw-work-agent-daily/actions/runs/40989042359/job/123846739488",
+    "workflowStartedAt": "2026-10-30T01:59:30.000Z",
+    "workflowUpdatedAt": "2026-10-30T01:59:42.000Z",
+    "observedAt": "2026-10-30T04:13:20.000Z",
+    "collectorStartedAt": null,
+    "collectorFinishedAt": null,
+    "diagnosticLoggedAt": "2026-10-30T01:59:40.674Z",
+    "diagnostics": {
+      "kind": "collector_diagnostics",
+      "schemaVersion": 1,
+      "aborted": true,
+      "search": {
+        "planned": 13,
+        "attempted": 1,
+        "succeeded": 0,
+        "failed": 1,
+        "notAttempted": 12
+      },
+      "details": {
+        "observed": 0,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "notAttempted": 0
+      },
+      "events": [
+        {
+          "stage": "search",
+          "httpStatus": 403,
+          "reason": "access_denied"
+        }
+      ]
+    },
+    "stepResults": {
+      "tests": "SUCCEEDED",
+      "collection": "FAILED",
+      "snapshot": "SKIPPED",
+      "repositoryPersistence": "SKIPPED",
+      "publication": "SKIPPED"
+    },
+    "contentSha256": "71e70b5d537677b4154a0961e25fe9aa0fc0a2ea2e038ade949eee1533b643f1"
+  }
+}

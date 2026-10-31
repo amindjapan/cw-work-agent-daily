@@ -1,0 +1,76 @@
+name: Collector Status View (no collection)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  status-view:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run synthetic tests
+        run: npm test
+
+      - name: Verify current source and Git reconstruction baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SOURCE="$(git rev-parse HEAD)"
+          REMOTE_SOURCE="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test -n "$REMOTE_SOURCE"
+          test "$EXPECTED_SOURCE" = "$REMOTE_SOURCE"
+          node src/reconstructed-baseline.js --directory collector-preservation/reconstructed/site --manifest collector-preservation/reconstructed/manifest.json
+
+      - name: Build status view without collection
+        shell: bash
+        run: |
+          set -euo pipefail
+          VIEW_AS_OF="$(node -e 'console.log(new Date().toISOString())')"
+          node src/build-collector-site.js --summary collector-data/latest.json --archives collector-data --observations collector-status/attempts --patrol public-patrol/latest.json --reconstruction collector-preservation/reconstructed/manifest.json --reconstruction-mode status-only --as-of "$VIEW_AS_OF" --output "$RUNNER_TEMP/cw-site-source"
+          node src/prepare-public-artifact.js --source "$RUNNER_TEMP/cw-site-source" --output "$RUNNER_TEMP/cw-public-artifact" --overview
+          node src/reconstructed-baseline.js --directory collector-preservation/reconstructed/site --manifest collector-preservation/reconstructed/manifest.json --published-directory "$RUNNER_TEMP/cw-public-artifact" --mode status-only
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/cw-public-artifact
+
+      - name: Recheck source before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SOURCE="$(git rev-parse HEAD)"
+          REMOTE_SOURCE="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test -n "$REMOTE_SOURCE"
+          test "$EXPECTED_SOURCE" = "$REMOTE_SOURCE"
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

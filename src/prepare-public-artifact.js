@@ -2,12 +2,17 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { isDeepStrictEqual } = require("node:util");
+const { isDeepStrictEqual, types: { isProxy } } = require("node:util");
 const { normalizePublicJobRef, normalizePublicTimestamp } = require("./public-evidence");
 const { normalizeText } = require("./model");
 const { parseStrictJsonBytes } = require("./strict-json");
+const { projectPublicAttempt } = require("./collector-attempt");
+const { projectPublicPatrol } = require("./public-patrol-import");
+const { projectWorkflowObservation } = require("./workflow-observation");
+const { projectReconstructionManifest } = require("./reconstructed-baseline");
 
 const PUBLIC_FILES = ["index.html", "latest.json", "latest.md", ".nojekyll"];
+const OVERVIEW_FILES = ["collector-status.json", "public-patrol.json"];
 const isString = (value) => typeof value === "string";
 const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
 const isBoolean = (value) => typeof value === "boolean";
@@ -186,10 +191,58 @@ function archiveFilename(name) {
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === match[1];
 }
 
-function preparePublicArtifact({ sourceDir, outputDir } = {}) {
+function projectCollectorStatus(value) {
+  if (isProxy(value) || !isObject(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new Error("invalid_collector_status");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Object.values(descriptors).some((descriptor) => !Object.hasOwn(descriptor, "value"))
+    || !Object.hasOwn(descriptors, "kind") || !Object.hasOwn(descriptors, "schemaVersion")
+    || descriptors.kind.value !== "collector_status" || ![1, 2].includes(descriptors.schemaVersion.value)) {
+    throw new Error("invalid_collector_status");
+  }
+  const keys = ["kind", "schemaVersion", "availability", "attempt", "asOf",
+    ...(value.schemaVersion === 2 ? ["workflowObservation"] : [])];
+  if (Reflect.ownKeys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))
+    || Reflect.ownKeys(value).some((key) => !keys.includes(key)) || !isTimestamp(value.asOf)
+    || !["AVAILABLE", "UNAVAILABLE"].includes(value.availability)) throw new Error("invalid_collector_status");
+  const attempt = value.attempt === null ? null : projectPublicAttempt(value.attempt);
+  const workflowObservation = value.schemaVersion === 2 && value.workflowObservation !== null
+    ? projectWorkflowObservation(value.workflowObservation) : null;
+  if (attempt !== null && workflowObservation !== null
+    || (value.availability === "UNAVAILABLE") !== (attempt === null && workflowObservation === null)) {
+    throw new Error("invalid_collector_status");
+  }
+  if (attempt && (attempt.startedAt > value.asOf || attempt.finishedAt !== null && attempt.finishedAt > value.asOf)) {
+    throw new Error("invalid_collector_status");
+  }
+  if (workflowObservation && [workflowObservation.workflowStartedAt, workflowObservation.workflowUpdatedAt,
+    workflowObservation.observedAt, workflowObservation.diagnosticLoggedAt].some((stamp) => stamp !== null && stamp > value.asOf)) {
+    throw new Error("invalid_collector_status");
+  }
+  return { kind: "collector_status", schemaVersion: value.schemaVersion, availability: value.availability, asOf: value.asOf,
+    attempt, ...(value.schemaVersion === 2 ? { workflowObservation } : {}) };
+}
+
+function overviewMarkdown(view) {
+  const reconstruction = view.reconstruction ? ["", "## 復元基準：Git保存資料からの再構成", "当時の配信物との完全一致は未検証です。",
+    "ここに示す由来・hashは保持した復元基準で、最新保存資料・表示時刻とは分離しています。最新の保存資料が同じ inputCommit に由来するという認定ではありません。",
+    `inputCommit: ${view.reconstruction.inputCommit}`, `sourceCodeBaseCommit: ${view.reconstruction.sourceCodeBaseCommit}`,
+    `reconstructedAt: ${view.reconstruction.reconstructedAt}`,
+    `未取得資料: ${view.reconstruction.missingMaterial.join(", ")}`,
+    ...view.reconstruction.sourceInputs.map((source) => `${source.repositoryPath} -> ${source.baselinePath}: bytes=${source.bytes}, JSON SHA256=${source.sha256}, Git blob SHA1=${source.gitBlobSha}`)] : [];
+  return ["# Collector status", "", `表示基準時刻（asOf）: ${view.asOf}`, "Last verified success: UNKNOWN", "",
+    "取り込み範囲の最終確認済み試行を表示します。取り込み後の run は自動反映しません。",
+    `取り込み元の観測時刻（observationRecordedAt）: ${view.lastAttempt.observationRecordedAt ?? "UNKNOWN"}`,
+    "asOf は表示基準であり、新しい観測の証拠ではありません。Actions の自動監視・取得は行いません。", "",
+    "See index.html for the separately attributed attempt, saved material and patrol evidence.", ...reconstruction, ""].join("\n");
+}
+
+function preparePublicArtifact({ sourceDir, outputDir, includeOverview = false } = {}) {
   if (typeof sourceDir !== "string" || typeof outputDir !== "string") {
     throw new Error("public_artifact_paths_required");
   }
+  if (typeof includeOverview !== "boolean") throw new Error("invalid_overview_option");
   const source = path.resolve(sourceDir), output = path.resolve(outputDir);
   const sourceStat = fs.lstatSync(source);
   if (sourceStat.isSymbolicLink() || !sourceStat.isDirectory()) {
@@ -207,6 +260,8 @@ function preparePublicArtifact({ sourceDir, outputDir } = {}) {
   }
 
   const selected = [...PUBLIC_FILES];
+  if (includeOverview) selected.push(...OVERVIEW_FILES);
+  if (includeOverview && fs.existsSync(path.join(source, "reconstruction.json"))) selected.push("reconstruction.json");
   const archive = path.join(source, "archive");
   if (fs.existsSync(archive)) {
     const stat = fs.lstatSync(archive);
@@ -224,25 +279,48 @@ function preparePublicArtifact({ sourceDir, outputDir } = {}) {
     let summary;
     try { summary = parseStrictJsonBytes(original).value; }
     catch { throw new Error("invalid_public_summary"); }
-    const projected = projectPublicSummary(summary);
+    const projected = relative === "collector-status.json" ? projectCollectorStatus(summary)
+      : relative === "public-patrol.json" ? projectPublicPatrol(summary)
+        : relative === "reconstruction.json" ? projectReconstructionManifest(summary) : projectPublicSummary(summary);
+    if (relative === "reconstruction.json" && !isDeepStrictEqual(summary, projected)) throw new Error("invalid_public_reconstruction");
     return { relative, content: isDeepStrictEqual(summary, projected) ? original
       : Buffer.from(`${JSON.stringify(projected, null, 2)}\n`, "utf8") };
   });
+  if (includeOverview) {
+    const json = (name) => parseStrictJsonBytes(copies.find((copy) => copy.relative === name).content).value;
+    const status = json("collector-status.json");
+    // Resolve only when composing after this module has loaded; overview uses
+    // the existing public summary projector and has no I/O on import.
+    const { buildCollectorOverview, renderCollectorOverview } = require("./collector-overview");
+    const view = buildCollectorOverview({ latestAttempt: status.attempt, workflowObservation: status.workflowObservation ?? null, savedSummary: json("latest.json"),
+      verifiedSuccess: null, patrol: json("public-patrol.json"),
+      reconstruction: copies.some((copy) => copy.relative === "reconstruction.json") ? json("reconstruction.json") : null, asOf: status.asOf });
+    // New overview mode always renders from projected data. It never copies
+    // arbitrary HTML/Markdown from a staging directory into a public artifact.
+    copies.find((copy) => copy.relative === "index.html").content = Buffer.from(renderCollectorOverview(view), "utf8");
+    copies.find((copy) => copy.relative === "latest.md").content = Buffer.from(overviewMarkdown(view), "utf8");
+    copies.find((copy) => copy.relative === ".nojekyll").content = Buffer.alloc(0);
+  }
   fs.mkdirSync(output, { recursive: true });
   for (const { relative, content } of copies) {
     const destination = path.join(output, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.writeFileSync(destination, content);
+    fs.writeFileSync(destination, content, { flag: "wx" });
   }
   return { copiedFiles: selected.map((relative) => relative.split(path.sep).join("/")) };
 }
+
+// Export the projectors before the CLI can lazily load the overview renderer,
+// which uses this module's existing public-summary projection.
+module.exports = { preparePublicArtifact, projectPublicSummary, projectCollectorStatus, overviewMarkdown };
 
 if (require.main === module) {
   try {
     const sourceIndex = process.argv.indexOf("--source"), outputIndex = process.argv.indexOf("--output");
     const result = preparePublicArtifact({
       sourceDir: sourceIndex < 0 ? undefined : process.argv[sourceIndex + 1],
-      outputDir: outputIndex < 0 ? undefined : process.argv[outputIndex + 1]
+      outputDir: outputIndex < 0 ? undefined : process.argv[outputIndex + 1],
+      includeOverview: process.argv.includes("--overview")
     });
     console.log(JSON.stringify({ status: "public_artifact_prepared", ...result }));
   } catch (error) {
@@ -250,5 +328,3 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-
-module.exports = { preparePublicArtifact, projectPublicSummary };

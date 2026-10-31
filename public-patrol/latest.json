@@ -1,0 +1,24 @@
+{
+  "kind": "public_patrol",
+  "schemaVersion": 1,
+  "assessment": "PUBLIC_EVIDENCE_ONLY",
+  "availability": "UNAVAILABLE",
+  "run": null,
+  "scope": {
+    "declaredPlatforms": [],
+    "unsupportedSources": []
+  },
+  "sources": [],
+  "entries": [],
+  "counts": {
+    "sources": null,
+    "observations": null,
+    "uniqueJobs": null,
+    "unsupportedSources": null
+  },
+  "limitationCodes": [
+    "not_connected",
+    "public_evidence_only"
+  ],
+  "contentSha256": "370b014bd5d391d4967932cfbe5788e3a44daed8ca22d023998b21c92c7f4f50"
+}
