@@ -54,8 +54,8 @@ Independent review found fake attributes/inert markup and nested organization
 context gaps; both were repaired and covered by additional cases.
 
 Final local syntax checks and all **571 tests** passed, with zero failures or
-skips (Node 24.22.1). These tests use synthetic responses only. The existing draft
-PR CI checks Node 22 and the exact PR commit; its result must be checked separately
+skips (Node 24.22.1). These tests use synthetic responses only. The existing
+pull-request CI checks Node 22 and the exact PR commit; its result must be checked separately
 before release. No live CrowdWorks request or production workflow was dispatched.
 The final independent review reran all 571 tests and found no blocking issue for
 this bounded draft-PR scope. It retained the scanner and live-verification limits.
@@ -67,9 +67,10 @@ allowlist, storage path, credential or dependency is changed.
 
 ## Release and rollback
 
-The repair is prepared on a separate draft PR. This document does not establish
-main integration, Pages deployment or successful live collection. Review CI and
-independent findings before any separately authorized production integration.
+The repair is prepared on a separate branch for a draft PR. PR submission and CI
+are pending. This document does not establish main integration, Pages deployment
+or successful live collection. Review CI and independent findings before any
+separately authorized production integration.
 
 Rollback is a source revert of this repair's commit. No data migration or deletion
 is needed. Existing snapshots and the accepted reconstruction remain untouched.
