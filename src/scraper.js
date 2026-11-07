@@ -1,7 +1,8 @@
 "use strict";
 
 const { classifyJob, normalizeText } = require("./model");
-const { normalizePublicJobRef, normalizePublicProfileRef } = require("./public-evidence");
+const { normalizePublicJobRef } = require("./public-evidence");
+const { extractJobPosting, postingDescription, postingPublicClient } = require("./job-posting");
 
 const CATEGORY_NAMES = {
   37: "記事・Webコンテンツ作成",
@@ -238,11 +239,12 @@ async function fetchJobDetail(job) {
   const response = await fetch(ref.url, { headers: requestHeaders(), redirect: "manual" });
   const { html, stopReason } = await inspectAccessResponse(response, ref.url);
   if (response.ok !== true || !Number.isInteger(response.status) || response.status < 200 || response.status >= 300
-    || stopReason || isBlockedOrUnsupported(response.status, html, response.url)) {
+    || stopReason || isBlockedOrUnsupported(response.status, html, response.url, ref.url)) {
     return { ...job, detailFetch: { ok: false, status: response.status, outcome: "fetch_failed", stopReason } };
   }
 
-  const description = extractJobDescription(html);
+  const posting = extractJobPosting(html, ref.url);
+  const description = postingDescription(posting, decodeHtmlEntities);
   if (!description) {
     return { ...job, detailFetch: { ok: false, status: response.status, outcome: "extraction_failed", stopReason: null } };
   }
@@ -254,7 +256,7 @@ async function fetchJobDetail(job) {
     detailCheckedAt: new Date().toISOString(),
     detailFetch: { ok: true, status: response.status, outcome: "success", stopReason: null },
     contentSources: { description: "detail", budget: detailBudget ? "detail" : "search" },
-    publicClient: extractJobPublicClient(html)
+    publicClient: postingPublicClient(posting)
   };
   return { ...detailed, analysis: classifyJob(detailed) };
 }
@@ -282,42 +284,12 @@ function inspectSearchResult(html, sourceUrl = "") {
   return { jobs: extractJobs(html, sourceUrl), complete: false, outcome: "extraction_failed" };
 }
 
-function extractJobPublicClient(html) {
-  const refs = [];
-  for (const match of String(html || "").matchAll(
-    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
-  )) {
-    try {
-      const posting = JSON.parse(match[1]);
-      if (posting["@type"] !== "JobPosting") continue;
-      const url = posting.hiringOrganization && posting.hiringOrganization.url;
-      const id = typeof url === "string" && url.match(/^https:\/\/crowdworks\.jp\/public\/employers\/(\d+)(?:[?#].*)?$/);
-      if (!id) continue;
-      const ref = normalizePublicProfileRef({ platform: "crowdworks", profileId: id[1], url });
-      if (ref) refs.push(ref);
-    } catch {
-      // An absent or ambiguous explicit profile link stays unconfirmed.
-    }
-  }
-  const unique = [...new Map(refs.map((ref) => [ref.profileId, ref])).values()];
-  return unique.length === 1 ? unique[0] : null;
+function extractJobPublicClient(html, requestedUrl) {
+  return postingPublicClient(extractJobPosting(html, requestedUrl));
 }
 
-function extractJobDescription(html) {
-  const scripts = String(html || "").matchAll(
-    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
-  );
-  for (const match of scripts) {
-    try {
-      const data = JSON.parse(match[1]);
-      if (data && data["@type"] === "JobPosting" && data.description) {
-        return normalizeText(decodeHtmlEntities(data.description));
-      }
-    } catch {
-      // Ignore unrelated or malformed structured-data blocks.
-    }
-  }
-  return "";
+function extractJobDescription(html, requestedUrl) {
+  return postingDescription(extractJobPosting(html, requestedUrl), decodeHtmlEntities);
 }
 
 function requestHeaders() {
@@ -443,12 +415,12 @@ async function inspectAccessResponse(response, requestUrl) {
   }
 }
 
-function isBlockedOrUnsupported(status, html, responseUrl) {
+function isBlockedOrUnsupported(status, html, responseUrl, requestedJobUrl) {
   const text = accessWarningText(html);
   return classifyAccessStop(status, html, responseUrl) !== null
     // Normal pages carry fallback notices even outside noscript. Require verified content.
     || (/JavaScriptを有効|ページを正しく表示できません|(?:enable|turn\s+on)\s+javascript|javascript\s+(?:is\s+)?(?:required|disabled)/i.test(text)
-      && !inspectSearchResult(html).complete && !extractJobDescription(html));
+      && !inspectSearchResult(html).complete && !extractJobDescription(html, requestedJobUrl));
 }
 
 module.exports = {
