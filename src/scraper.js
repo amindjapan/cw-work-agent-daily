@@ -3,6 +3,7 @@
 const { classifyJob, normalizeText } = require("./model");
 const { normalizePublicJobRef } = require("./public-evidence");
 const { extractJobPosting, postingDescription, postingPublicClient } = require("./job-posting");
+const { inspectHtmlJobDetail, extractHtmlJobDescription } = require("./job-detail-html");
 
 const CATEGORY_NAMES = {
   37: "記事・Webコンテンツ作成",
@@ -244,7 +245,8 @@ async function fetchJobDetail(job) {
   }
 
   const posting = extractJobPosting(html, ref.url);
-  const description = postingDescription(posting, decodeHtmlEntities);
+  const description = postingDescription(posting, decodeHtmlEntities)
+    || (!posting && !/application\/ld\+json/i.test(html) ? extractHtmlJobDescription(html, ref.url) : "");
   if (!description) {
     return { ...job, detailFetch: { ok: false, status: response.status, outcome: "extraction_failed", stopReason: null } };
   }
@@ -289,7 +291,9 @@ function extractJobPublicClient(html, requestedUrl) {
 }
 
 function extractJobDescription(html, requestedUrl) {
-  return postingDescription(extractJobPosting(html, requestedUrl), decodeHtmlEntities);
+  const posting = extractJobPosting(html, requestedUrl);
+  return postingDescription(posting, decodeHtmlEntities)
+    || (!posting && !/application\/ld\+json/i.test(html) ? extractHtmlJobDescription(html, requestedUrl) : "");
 }
 
 function requestHeaders() {
@@ -327,11 +331,11 @@ function activeCaptchaWidget(html) {
     const match = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"));
     return match ? decodeAccessEntities(match[1] ?? match[2] ?? match[3]).trim() : null;
   };
-  for (const [tag] of markup.matchAll(/<(?:div|span|form|section)\b[^>]*>/gi)) {
+  for (const [tag] of markup.matchAll(/<(?:div|span|form|section)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
     const classes = attribute(tag, "class");
     if (classes && /(?:^|\s)(?:g-recaptcha|h-captcha)(?:\s|$)/i.test(classes) && attribute(tag, "data-sitekey")) return true;
   }
-  for (const [tag] of markup.matchAll(/<iframe\b[^>]*>/gi)) {
+  for (const [tag] of markup.matchAll(/<iframe\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
     const source = attribute(tag, "src");
     if (!source) continue;
     try {
@@ -357,7 +361,7 @@ function loginDestination(value) {
   } catch { return false; }
 }
 
-function captchaRequirement(text) {
+function captchaRequirement(text, bareLabelText = text) {
   // A CAPTCHA mentioned as an integration/development topic is job content.
   // Require a challenge label, an explicit requirement, or an instruction.
   return /^(?:re)?captcha(?:\s+(?:challenge|verification|認証))?[.!。:：]?$/i.test(text)
@@ -365,7 +369,8 @@ function captchaRequirement(text) {
     || /\b(?:complete|solve|enter|pass)\s+(?:the\s+|a\s+)?(?:re)?captcha\b/i.test(text)
     || /(?:re)?captcha\s*(?:を)?\s*(?:認証|確認|入力|完了|解決|チェック)(?:を)?\s*(?:して(?:ください|下さい)|する必要|が必要|行って(?:ください|下さい))/i.test(text)
     || /(?:画像|文字)認証(?:が必要|(?:を)?(?:入力|完了|確認)(?:して(?:ください|下さい)|が必要)|(?:を)?行って(?:ください|下さい))/.test(text)
-    || /私はロボットではありません|ロボットではないことを(?:確認|認証)(?:して(?:ください|下さい)|する必要)|人間であることを(?:確認|認証)(?:して(?:ください|下さい)|する必要)|verify\s+(?:that\s+)?you(?:'re|\s+are)\s+(?:a\s+)?human/i.test(text);
+    || /私はロボットではありません/.test(bareLabelText)
+    || /ロボットではないことを(?:確認|認証)(?:して(?:ください|下さい)|する必要)|人間であることを(?:確認|認証)(?:して(?:ください|下さい)|する必要)|verify\s+(?:that\s+)?you(?:'re|\s+are)\s+(?:a\s+)?human/i.test(text);
 }
 
 // Fixed classifications only: no URL, response body, or caller exception is
@@ -377,7 +382,19 @@ function classifyAccessStop(status, html, responseUrl) {
   if (loginDestination(responseUrl)) return "authentication_required";
   if (activeCaptchaWidget(html)) return "captcha_required";
   const text = accessWarningText(html);
-  if (captchaRequirement(text)) {
+  // Only a narrowly quoted development-topic label in an identity-verified
+  // description can be exempted from the bare-label rule. All instructions,
+  // widgets, HTTP stops and warnings elsewhere remain checked unchanged.
+  const detail = inspectHtmlJobDetail(html, responseUrl);
+  const quotedTopic = /reCAPTCHA\s*[（(]\s*[「『“"]\s*私はロボットではありません\s*[」』”"]\s*[）)]\s*(?:等|など)?(?:の)?(?:実装|開発|導入|連携|回避対策)(?:経験|実績|ができるとなお良いです)/gi;
+  const extractedTopics = detail ? detail.description.match(quotedTopic) || [] : [];
+  const rawTopics = detail ? detail.html.match(quotedTopic) || [] : [];
+  const possibleWidget = /g-recaptcha|h-captcha|(?:google\.com|recaptcha\.net)\/recaptcha|recaptcha\.google\.com|hcaptcha\.com|challenges\.cloudflare\.com/i.test(decodeAccessEntities(html));
+  const verifiedTopics = !possibleWidget && extractedTopics.length > 0 && extractedTopics.length === rawTopics.length
+    && extractedTopics.every((topic, index) => topic === rawTopics[index]);
+  const bareLabelText = verifiedTopics ? accessWarningText(html.slice(0, detail.start)
+    + detail.html.replace(quotedTopic, " CAPTCHA開発への言及 ") + html.slice(detail.end)) : text;
+  if (captchaRequirement(text, bareLabelText)) {
     return "captcha_required";
   }
   if (/ログイン(?:してください|して下さい|が必要|する必要|して(?:から|続行|閲覧))|please\s+(?:log|sign)[ _-]?in|(?:login|log[ _-]?in|sign[ _-]?in|authentication)\s+(?:is\s+)?required|(?:log|sign)[ _-]?in\s+to\s+(?:continue|access|view)|you\s+(?:must|need\s+to)\s+(?:log|sign)[ _-]?in/i.test(text)) {
