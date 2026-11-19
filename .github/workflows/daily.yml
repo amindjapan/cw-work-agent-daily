@@ -35,7 +35,19 @@ jobs:
         run: npm test
 
       - name: Find today's recommendation
-        run: npm run daily
+        id: collect
+        shell: bash
+        run: |
+          set -o pipefail
+          umask 077
+          npm run daily 2>&1 | tee "$RUNNER_TEMP/collector-diagnostics.log"
+
+      - name: Record collector diagnostics
+        # Access stops still fail collection and block snapshot/Pages steps.
+        # Persist only allowlisted diagnostics in the Actions run summary.
+        if: ${{ always() && steps.collect.outcome != 'skipped' }}
+        shell: bash
+        run: node scripts/collector-log-summary.cjs "$RUNNER_TEMP/collector-diagnostics.log" "$GITHUB_STEP_SUMMARY"
 
       - name: Create Collector snapshots
         shell: bash

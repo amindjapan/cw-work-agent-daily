@@ -16,11 +16,25 @@ const steps = (text) => text.split(/^      - name: /m).slice(1).map((step) => ({
 const named = (text, name) => steps(text).find((step) => step.name === name).text;
 
 test("connection: daily collection, snapshot, gate and schedule prefix stays unchanged", () => {
-  const prefix = daily.slice(0, daily.indexOf("      - name: Prepare public files"));
-  assert.equal(crypto.createHash("sha256").update(prefix).digest("hex"),
+  const collectMarker = "      - name: Find today's recommendation\n";
+  const snapshotMarker = "      - name: Create Collector snapshots\n";
+  const start = daily.indexOf(collectMarker);
+  const end = daily.indexOf(snapshotMarker);
+  assert.ok(start >= 0 && end > start);
+  const frozen = daily.slice(0, start) + collectMarker + "        run: npm run daily\n\n"
+    + daily.slice(end, daily.indexOf("      - name: Prepare public files"));
+  assert.equal(crypto.createHash("sha256").update(frozen).digest("hex"),
     "8982ab9f08c5dd48d00a2a91cb931138464427f93abb0ee33f937122c9fa2a02");
+  const collect = named(daily, "Find today's recommendation");
+  assert.match(collect, /id: collect\n/);
+  assert.match(collect, /set -o pipefail[\s\S]*npm run daily 2>&1 \| tee "\$RUNNER_TEMP\/collector-diagnostics\.log"/);
+  const summary = named(daily, "Record collector diagnostics");
+  assert.match(summary, /if: \$\{\{ always\(\) && steps\.collect\.outcome != 'skipped' \}\}/);
+  assert.match(summary, /run: node scripts\/collector-log-summary\.cjs "\$RUNNER_TEMP\/collector-diagnostics\.log" "\$GITHUB_STEP_SUMMARY"/);
+  assert.equal((daily.match(/\balways\(\)/g) || []).length, 1);
   assert.equal((daily.match(/npm run daily/g) || []).length, 1);
-  assert.doesNotMatch(daily, /\balways\(\)|continue-on-error|pull_request_target/);
+  assert.doesNotMatch(daily, /continue-on-error|pull_request_target/);
+  assert.doesNotMatch(daily.slice(end), /\b(?:always|failure|cancelled)\(\)/);
 });
 
 test("connection: status view is manual main only, without collection or repository writes", () => {

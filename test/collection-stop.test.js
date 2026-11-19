@@ -267,9 +267,14 @@ test("CLI unexpected failures never print exception text or an absolute input pa
 
 test("production workflow gates snapshot and Pages steps behind the CLI success", () => {
   const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/daily.yml"), "utf8");
-  const daily = workflow.indexOf("run: npm run daily");
-  assert.ok(daily > 0);
+  const daily = workflow.indexOf("npm run daily 2>&1 | tee");
+  const diagnostics = workflow.indexOf("- name: Record collector diagnostics");
+  const publish = workflow.indexOf("- name: Create Collector snapshots");
+  assert.ok(daily > 0 && diagnostics > daily && publish > diagnostics);
+  assert.match(workflow.slice(diagnostics, publish),
+    /if: \$\{\{ always\(\) && steps\.collect\.outcome != 'skipped' \}\}/);
   for (const step of ["Create Collector snapshots", "Commit Collector repository snapshots", "Configure Pages",
-    "Prepare public files", "Upload Pages artifact", "Deploy Pages"]) assert.ok(workflow.indexOf(`- name: ${step}`) > daily);
-  assert.doesNotMatch(workflow, /continue-on-error:|always\(\)|failure\(\)/);
+    "Prepare public files", "Upload Pages artifact", "Deploy Pages"]) assert.ok(workflow.indexOf(`- name: ${step}`) >= publish);
+  assert.doesNotMatch(workflow, /continue-on-error:/);
+  assert.doesNotMatch(workflow.slice(publish), /always\(\)|failure\(\)|cancelled\(\)/);
 });
